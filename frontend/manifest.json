@@ -1,0 +1,14 @@
+{
+  "name": "__APP_NAME__",
+  "short_name": "__APP_NAME__",
+  "description": "__APP_DESCRIPTION__",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0c1220",
+  "theme_color": "#0c1220",
+  "icons": [
+    { "src": "__STATIC_PREFIX__/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "__STATIC_PREFIX__/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

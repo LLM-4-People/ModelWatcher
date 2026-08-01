@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+httpx
+pyyaml
+watchfiles
+orjson
+pywebpush
+cryptography
+Pillow
+tiktoken

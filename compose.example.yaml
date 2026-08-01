@@ -1,0 +1,28 @@
+# Example Docker Compose configuration for ModelWatcher.
+# Copy this file and adjust the paths to match your deployment.
+# All runtime configuration (HOST, PORT, TZ, restart, API keys, etc.) goes in .env.modelwatcher.
+
+services:
+  modelwatcher:
+    build: "/path/to/ModelWatcher/"
+    container_name: 'modelwatcher'
+    env_file: .env.modelwatcher
+    volumes:
+      # Read-only: backend/, frontend/, etc. (uvicorn --reload watches via inotify, works on :ro)
+      - "/path/to/ModelWatcher:/app:ro"
+      # Read-write: config dir only (config.py strips reset_epoch from models.yaml in-place)
+      - "/path/to/ModelWatcher/config:/app/config:rw"
+      # Read-write: SQLite DB, VAPID keys, favicons
+      - "/path/to/ModelWatcher/data:/app/data:rw"
+    ports:
+      - '127.0.0.1:${PORT}:${PORT}'
+    restart: "${restart}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
