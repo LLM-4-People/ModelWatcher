@@ -4,23 +4,23 @@ ModelWatcher is a real-time LLM API monitoring dashboard. This document covers t
 
 ## Table of contents
 
-- [High-level architecture](#high-level-architecture)
-- [The four test types](#the-four-test-types)
+- [High-level architecture](#high-level-architecture) - Three-layer overview
+- [The four test types](#the-four-test-types) - Benchmark, health, audit, probe
   - [Scheduling](#scheduling) - Per-model due-checking and dispatch order
-- [Streaming test flow](#streaming-test-flow)
-- [Anthropic vs OpenAI dual streaming paths](#anthropic-vs-openai-dual-streaming-paths)
-- [Data flow](#data-flow)
+- [Streaming test flow](#streaming-test-flow) - Request to metrics pipeline
+- [Anthropic vs OpenAI dual streaming paths](#anthropic-vs-openai-dual-streaming-paths) - Detection, endpoints, SSE events
+- [Data flow](#data-flow) - Config to WebSocket broadcast
   - [Key data structures](#key-data-structures) - model_registry, model_cache, recent_history, metrics_cache
-- [Module dependency graph](#module-dependency-graph)
+- [Module dependency graph](#module-dependency-graph) - Backend and frontend import structure
   - [Backend](#backend-backend---27-modules) - 27 modules, strictly unidirectional imports
   - [Frontend](#frontendjs---22-modules) - 22 ES modules, no bundler, no build step
-- [Single-source-of-truth principle](#single-source-of-truth-principle)
+- [Single-source-of-truth principle](#single-source-of-truth-principle) - Config, labels, tiers, error format
 - [Error handling - the 3-net model](#error-handling---the-3-net-model)
-- [SQLite schema](#sqlite-schema)
+- [SQLite schema](#sqlite-schema) - 7 tables, WAL mode, connection model
   - [Connection model](#connection-model) - Write lock, read pool, PRAGMAs
   - [Read vs write path](#read-vs-write-path) - Hot path (model_cache) vs cold path (SQLite)
-- [Config hot-reload](#config-hot-reload)
-- [PWA and service worker](#pwa-and-service-worker)
+- [Config hot-reload](#config-hot-reload) - watchfiles, in-place mutation, wake event
+- [PWA and service worker](#pwa-and-service-worker) - Push-only SW, auto-update, VAPID
 
 ## High-level architecture
 

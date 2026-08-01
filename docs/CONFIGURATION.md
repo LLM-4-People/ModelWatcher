@@ -34,12 +34,12 @@ Example files are provided: `config/app.yaml.example`, `config/models.yaml.examp
 - [audits.yaml](#auditsyaml) - Audit suite definitions
   - [Top-level fields](#top-level-fields) - Master toggle and suite dict
   - [Suite fields](#suite-fields) - Per-suite configuration (url, stream, count, skip_reasoning, etc.)
-- [Environment variables](#environment-variables)
+- [Environment variables](#environment-variables) - API keys, overrides, server bind
   - [Provider API keys](#provider-api-keys) - Env var references via ${VAR_NAME} syntax
   - [Config file path overrides](#config-file-path-overrides) - MW_MODELS_YAML, MW_APP_YAML, etc.
   - [Server bind](#server-bind) - HOST, PORT, FORWARDED_ALLOW_IPS
   - [Diagnostics](#diagnostics) - MW_DISABLE_TESTS
-- [Cross-file relationships](#cross-file-relationships)
+- [Cross-file relationships](#cross-file-relationships) - How config values reference each other
 
 ---
 

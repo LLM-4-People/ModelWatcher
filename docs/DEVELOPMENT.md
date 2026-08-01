@@ -4,21 +4,21 @@ This guide covers local setup, project structure, testing, and conventions for c
 
 ## Table of contents
 
-- [Local setup](#local-setup)
+- [Local setup](#local-setup) - Prerequisites, dependencies, build, run
   - [Prerequisites](#prerequisites) - Python 3.13+, Node.js 22+
   - [Install dependencies](#install-dependencies) - pip + npm
   - [Build Tailwind CSS](#build-tailwind-css) - One-time and watch modes
   - [Run the server](#run-the-server) - uvicorn with --reload
-- [Project structure](#project-structure)
-- [Testing](#testing)
-- [Frontend conventions](#frontend-conventions)
-- [Backend conventions](#backend-conventions)
-- [Adding a new provider](#adding-a-new-provider)
+- [Project structure](#project-structure) - Backend, frontend, config, scripts
+- [Testing](#testing) - 89 tests across 9 files
+- [Frontend conventions](#frontend-conventions) - Named exports, ES modules, Tailwind
+- [Backend conventions](#backend-conventions) - Package architecture, naming, error handling
+- [Adding a new provider](#adding-a-new-provider) - Env var, recreate, edit YAML
   - [Anthropic providers](#anthropic-providers) - Triggering the Anthropic streaming path
-- [Adding a new test type](#adding-a-new-test-type)
-- [Config hot-reload](#config-hot-reload)
-- [Utility scripts](#utility-scripts)
-- [Performance/stress test scripts](#performancestress-test-scripts)
+- [Adding a new test type](#adding-a-new-test-type) - 9-step guide
+- [Config hot-reload](#config-hot-reload) - watchfiles, in-place mutation
+- [Utility scripts](#utility-scripts) - Import checker, DB scale tester
+- [Performance/stress test scripts](#performancestress-test-scripts) - Not included in repo
 
 ## Local setup
 

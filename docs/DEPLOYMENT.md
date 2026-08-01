@@ -4,28 +4,29 @@ This guide covers deploying ModelWatcher with Docker Compose, including nginx re
 
 ## Table of contents
 
-- [Prerequisites](#prerequisites)
-- [Docker compose setup](#docker-compose-setup)
+- [Prerequisites](#prerequisites) - Docker and Docker Compose
+- [Docker compose setup](#docker-compose-setup) - Step-by-step deployment
   - [1. clone the repository](#1-clone-the-repository) - Get the code
   - [2. create environment and config files](#2-create-environment-and-config-files) - Copy examples and edit
   - [3. configure compose](#3-configure-compose) - Set paths and ports
-  - [4. build and run](#4-build-and-run) - Start the container- [Volume mounts](#volume-mounts)
-- [Environment variables](#environment-variables)
+  - [4. build and run](#4-build-and-run) - Start the container
+- [Volume mounts](#volume-mounts) - Read-only app, read-write config and data
+- [Environment variables](#environment-variables) - Server bind, API keys, overrides
   - [Changing environment variables](#changing-environment-variables) - Requires container recreate
   - [Adding a new provider (operational workflow)](#adding-a-new-provider-operational-workflow) - Env var, recreate, then edit YAML
   - [Server bind](#server-bind) - HOST, PORT, FORWARDED_ALLOW_IPS, TZ, restart
   - [Provider API keys](#provider-api-keys) - Env var references via ${VAR_NAME} syntax
   - [Diagnostics](#diagnostics) - MW_DISABLE_TESTS
   - [Config overrides](#config-overrides) - MW_MODELS_YAML, MW_APP_YAML, etc.
-- [Nginx reverse proxy](#nginx-reverse-proxy)
-- [Health check](#health-check)
-- [PWA and push notifications](#pwa-and-push-notifications)
+- [Nginx reverse proxy](#nginx-reverse-proxy) - HTTPS termination and WebSocket proxying
+- [Health check](#health-check) - Docker HEALTHCHECK via /health endpoint
+- [PWA and push notifications](#pwa-and-push-notifications) - VAPID, HTTPS, installation, push flow
   - [VAPID keys](#vapid-keys) - Auto-generated on first run
   - [HTTPS requirement](#https-requirement) - Required for web push
   - [Installing the PWA](#installing-the-pwa) - Browser install and background push
   - [Push notification flow](#push-notification-flow) - 7-step subscription lifecycle
-- [Updating](#updating)
-- [Scaling considerations](#scaling-considerations)
+- [Updating](#updating) - git pull + hot-reload vs full rebuild
+- [Scaling considerations](#scaling-considerations) - Single-process limits and tuning
 
 ## Prerequisites
 

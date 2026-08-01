@@ -16,19 +16,19 @@ ModelWatcher exposes 15 REST endpoints across 7 tags. Interactive documentation 
 ## Table of contents
 
 - [Conventions](#conventions) - Error format, rate limiting, content type
-- [Metrics](#metrics)
+- [Metrics](#metrics) - Model status, scores, chart data, history
   - [GET /api/metrics](#get-apimetrics) - Model metrics, chart data, and history
-- [Providers](#providers)
+- [Providers](#providers) - Provider and model registry
   - [GET /api/providers](#get-apiproviders) - Provider and model registry listings
-- [Config](#config)
+- [Config](#config) - Runtime configuration, deploy version, client errors
   - [GET /api/config](#get-apiconfig) - Runtime configuration (thresholds, labels, intervals)
   - [GET /api/deploy-version](#get-apideploy-version) - Deployment version hash
   - [POST /api/client-error](#post-apiclient-error) - Client-side error reporting
-- [Audit](#audit)
+- [Audit](#audit) - SynBad audit test results
   - [GET /api/audit](#get-apiaudit) - Audit test results
-- [Model info](#model-info)
+- [Model info](#model-info) - Model capability and metadata
   - [GET /api/model-info](#get-apimodel-info) - Model capability and metadata
-- [Notifications](#notifications)
+- [Notifications](#notifications) - Push subscriptions, preferences, history
   - [GET /api/notifications](#get-apinotifications) - Notification config and history
   - [GET /api/vapid-key](#get-apivapid-key) - VAPID public key for web push
   - [POST /api/push/subscribe](#post-apipushsubscribe) - Subscribe to web push
@@ -36,7 +36,7 @@ ModelWatcher exposes 15 REST endpoints across 7 tags. Interactive documentation 
   - [PUT /api/push/preferences](#put-apipushpreferences) - Update notification preferences
   - [POST /api/push/test](#post-apipushtest) - Send a test push notification
   - [GET /api/push/validate](#get-apipushvalidate) - Validate push endpoint registration
-- [Health](#health)
+- [Health](#health) - Service health check
   - [GET /health](#get-health) - Service health check
 - [WebSocket](#websocket) - Real-time update channel
 

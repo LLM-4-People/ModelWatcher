@@ -6,16 +6,16 @@ Live instance: <https://stats.ai4fun.dev>
 
 ## Table of contents
 
-- [Features](#features)
-- [Tech stack](#tech-stack)
-- [Quick start (Docker compose)](#quick-start-docker-compose)
-- [Configuration](#configuration)
-- [API](#api)
-- [Architecture](#architecture)
-- [Development](#development)
-- [PWA and notifications](#pwa-and-notifications)
-- [Screenshots](#screenshots)
-- [License](#license)
+- [Features](#features) - What ModelWatcher does
+- [Tech stack](#tech-stack) - Backend, frontend, database, real-time
+- [Quick start (Docker compose)](#quick-start-docker-compose) - 3-step setup
+- [Configuration](#configuration) - Three YAML config files
+- [API](#api) - 15 REST endpoints, Swagger UI, ReDoc
+- [Architecture](#architecture) - System design overview
+- [Development](#development) - Local setup and testing
+- [PWA and notifications](#pwa-and-notifications) - Installable app, push notifications
+- [Screenshots](#screenshots) - Live instance
+- [License](#license) - MIT
 
 ## Features
 
