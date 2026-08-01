@@ -14,7 +14,6 @@ Live instance: <https://stats.ai4fun.dev>
 - [Architecture](#architecture) - System design overview
 - [Development](#development) - Local setup and testing
 - [PWA and notifications](#pwa-and-notifications) - Installable app, push notifications
-- [Screenshots](#screenshots) - Live instance
 - [License](#license) - MIT
 
 ## Features
@@ -135,10 +134,6 @@ npm run build:css   # build Tailwind CSS
 # Run tests
 npm test            # 89 pytest tests across 9 files
 ```
-
-## Screenshots
-
-A live instance is running at <https://stats.ai4fun.dev>.
 
 ## License
 
