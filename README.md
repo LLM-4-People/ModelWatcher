@@ -14,6 +14,8 @@ Live instance: <https://stats.ai4fun.dev>
 - [Architecture](#architecture) - System design overview
 - [Development](#development) - Local setup and testing
 - [PWA and notifications](#pwa-and-notifications) - Installable app, push notifications
+- [Contributing](#contributing) - Branch strategy, code style, PRs
+- [Security](#security) - Vulnerability reporting, deployment hardening
 - [License](#license) - MIT
 
 ## Features
@@ -134,6 +136,14 @@ npm run build:css   # build Tailwind CSS
 # Run tests
 npm test            # 89 pytest tests across 9 files
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch strategy, code style, testing, and pull request guidelines.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions, vulnerability reporting, and deployment security considerations.
 
 ## License
 

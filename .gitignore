@@ -19,6 +19,8 @@
 !docker-compose.example.yaml
 !compose.example.yaml
 !README.md
+!SECURITY.md
+!CONTRIBUTING.md
 !LICENSE
 !.github/
 !.github/**/
