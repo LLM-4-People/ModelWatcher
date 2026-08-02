@@ -1,0 +1,95 @@
+# Model providers configuration
+#
+# API keys reference environment variables via ${VAR_NAME} syntax.
+# Values are resolved from the process environment at load time (no .env file).
+# The backend acts as a secure proxy for all API calls.
+#
+# ── Provider fields ────────────────────────────────────────────────────────
+#
+# Required:
+#   name       Provider display name (used in model keys: "ProviderName::model_id", must be unique)
+#   api_url    Base API URL (endpoint paths /chat/completions or /messages are appended;
+#              "anthropic" in the URL triggers the Anthropic streaming path; https:// added if missing)
+#   api_key    API key via ${VAR_NAME} env var (unresolved vars stay as literal ${...} strings)
+#   models     Non-empty list of model objects (see model fields below)
+#
+# Optional:
+#   concurrent_models  Models tested concurrently within this provider (default: 1 = sequential)
+#   provider_url       Override the provider homepage URL for favicon/title fetching and frontend link.
+#                      Auto-derived from api_url root domain when omitted. Use when the API domain
+#                      differs from the provider's public website (e.g., subdomain with separate SSL cert).
+#   models_url         Override the auto-detected /models endpoint for listing available models.
+#   model_info_url     Per-model detail endpoint; {model_id} is replaced with the model ID.
+#                      Used for fetching metadata (context window, pricing, capabilities, etc.).
+#   headers            Custom HTTP headers merged into all API requests to this provider (dict)
+#   request_options    Control which request parameters are sent (see request_options below)
+#   archived          true  - archive all models under this provider (stop testing, keep visible + historical data)
+#                     false - explicitly unarchive (clears persisted archive flag)
+#                     omit  - preserve existing state (auto-archived models stay archived)
+#   auto_archive      false - exempt this provider (and all its models) from auto-archiving
+#   reset_epoch       true  - force immediate retest of all models after config reload
+#                            (stripped from the YAML file after processing)
+#
+# ── Model fields ────────────────────────────────────────────────────────────
+#
+# Required:
+#   id    API model identifier sent to the provider (e.g., "gpt-4o", "claude-sonnet-4-20250514")
+#
+# Optional:
+#   name             Display name (defaults to id)
+#   hf_id            Override HuggingFace model ID for metadata enrichment (e.g., "org/Model-Name")
+#                    Only needed when the model ID/name can't be auto-matched to HuggingFace
+#   api_url          Per-model API URL override (when a provider routes different models through
+#                    different endpoints). Normalized (https:// added if missing).
+#   request_options  Per-model overrides merged on top of provider-level request_options
+#   archived         true/false/omit (same semantics as provider-level archived)
+#   auto_archive     false - exempt this model from auto-archiving
+#   reset_epoch      true  - force immediate retest of this model after config reload
+#
+# ── request_options ──────────────────────────────────────────────────────────
+#
+# All optional. Apply to OpenAI-compatible endpoints only (not Anthropic).
+# Can be set at provider level and/or per-model (model overrides merge on top).
+#
+#   token_param     "both"        (default) sends max_completion_tokens + max_tokens
+#                   "completion"  sends max_completion_tokens only (modern APIs)
+#                   "legacy"      sends max_tokens only (older APIs like DeepSeek)
+#   stream_options  true  (default) includes stream_options: {include_usage: true}
+#                   false omits it (some providers reject this field)
+#   logprobs        true  (default) includes logprobs: true in benchmark requests
+#                   false omits it (some providers reject this field)
+
+providers:
+  - name: "Example OpenAI-Compatible"
+    api_url: "https://api.example.com/v1"
+    api_key: "${EXAMPLE_API_KEY}"
+    # concurrent_models: 2
+    # provider_url: "https://example.com"
+    # models_url: "https://api.example.com/v1/models"
+    # model_info_url: "https://api.example.com/v1/models/{model_id}"
+    # headers:
+    #   X-Custom-Header: "value"
+    # request_options:
+    #   token_param: "both"
+    #   stream_options: true
+    #   logprobs: true
+    models:
+      - id: "model-id"
+        name: "Display Name"
+      - id: "another-model"
+        # name: "Another Model"           # defaults to id
+        # hf_id: "org/Model-Name"        # HuggingFace metadata lookup
+        # api_url: "https://other.example.com/v1"  # per-model endpoint override
+        # request_options:
+        #   token_param: "completion"     # per-model override
+        #   logprobs: false
+        # archived: false                # explicitly unarchive
+        # auto_archive: false            # exempt from auto-archiving
+        # reset_epoch: true              # force retest on next reload
+
+  - name: "Example Anthropic"
+    api_url: "https://api.anthropic.com/v1"
+    api_key: "${ANTHROPIC_API_KEY}"
+    models:
+      - id: "claude-sonnet-4-20250514"
+        name: "Claude Sonnet 4"

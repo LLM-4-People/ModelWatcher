@@ -1,0 +1,26 @@
+# Example Docker Compose configuration for ModelWatcher.
+# Copy this file and adjust the paths to match your deployment.
+# All runtime configuration (HOST, PORT, TZ, restart, API keys, etc.) goes in .env.
+
+services:
+  modelwatcher:
+    image: ghcr.io/llm-4-people/modelwatcher:latest
+    container_name: 'modelwatcher'
+    env_file: .env
+    volumes:
+      # Read-write: config dir (hot-reloaded by watchfiles, no restart needed)
+      - "./config:/app/config:rw"
+      # Read-write: SQLite DB, VAPID keys, favicons
+      - "./data:/app/data:rw"
+    ports:
+      - '127.0.0.1:${PORT}:${PORT}'
+    restart: "${restart}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"

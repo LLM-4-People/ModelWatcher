@@ -1,0 +1,27 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:css": "npx @tailwindcss/cli -i frontend/input.css -o frontend/tailwind.min.css --minify",
+    "watch:css": "npx @tailwindcss/cli -i frontend/input.css -o frontend/tailwind.min.css --minify --watch",
+    "test": "python3 -m pytest scripts/tests/ -v",
+    "perf": "node tests/perf-test.mjs",
+    "perf:quick": "node tests/perf-test.mjs --quick",
+    "perf:har": "node tests/perf-test.mjs --har",
+    "perf:install": "npm install && npx playwright install chromium",
+    "stress": "node tests/stress-ui.mjs",
+    "stress:quick": "node tests/stress-ui.mjs --quick",
+    "stress:profile": "node tests/stress-profile.mjs",
+    "stress:profile:quick": "node tests/stress-profile.mjs --quick"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.4",
+    "tailwindcss": "^4.2.4",
+    "autocannon": "^8.0.0",
+    "lighthouse": "^12.2.1",
+    "playwright": "^1.59.1"
+  },
+  "dependencies": {
+    "@syntheticlab/synbad": "^0.0.8"
+  }
+}

@@ -1,0 +1,300 @@
+# ModelWatcher configuration
+
+app:
+  # Display name (used in HTML title, manifest, footer, push notification titles)
+  name: "ModelWatcher"
+  # Short description (used in meta tags, manifest, og:description)
+  description: "Real-time LLM API monitoring dashboard"
+  # Enable uvicorn --reload (hot-reload backend on file change). Disable in production.
+  debug: true
+  # URL prefix for frontend assets (requires server restart - not hot-reloadable)
+  static_url_prefix: "/frontend"
+  # Logging verbosity: "debug" | "info" | "warning" | "error"
+  # Controls both backend Python logs and browser console output.
+  # Only messages at or above this level are shown.
+  log_level: "info"
+  # Public URL of the dashboard (used in CSP base-uri, webhook payloads, WS allowed origins)
+  site_url: &site_url "https://your-domain.example.com"
+  # VAPID subject claim for web push (mailto: or https: URL)
+  vapid_email: "mailto:you@your-domain.example.com"
+
+# Server connection limits (safety net - nginx is the primary limiter)
+server:
+  # Max concurrent HTTP connections (excess returns 503)
+  max_connections: 10000
+  # HTTP connect timeout in seconds (for outbound API requests to providers)
+  http_connect_timeout: 10
+  # Max connections in the httpx connection pool
+  http_pool_max: 20
+
+# Test scheduling and execution
+testing:
+  # Shared scheduling settings - initial_delay and max_concurrent_tests apply to all test types;
+  # max_retries, retry_delay, and stream_activity_timeout apply to benchmark and health only
+  # (audit and probe tests do not retry). timeout applies to all four test types.
+  max_retries: 3           # Retries on test failure (benchmark/health only; HTTP 4xx never retried)
+  initial_delay: 60        # Seconds to wait before first test run
+  retry_delay: 2           # Seconds between retry attempts
+  stream_activity_timeout: 30  # Seconds before declaring a stream stalled
+  timeout: 1200            # Request timeout in seconds (shared by benchmark, health, audit, and probe tests)
+  # Max models tested concurrently (global limit, prevents overwhelming httpx pool & remote APIs)
+  max_concurrent_tests: 50
+
+  benchmark:
+    interval: 7200        # Run benchmarks every 2 hours
+    # Run only one provider's benchmarks at a time - providers cycle in
+    # sorted order.  The next provider starts only after the current one
+    # finishes all its due benchmarks.  Set to false to run all providers
+    # concurrently (up to max_concurrent_tests).
+    stagger: true
+    # Total output token ceiling for ALL models (reasoning + answer combined).
+    # Models that naturally exceed this stop at the ceiling (finish_reason="length"),
+    # producing exactly this many tokens - comparable across thinking & non-thinking models.
+    target_total_tokens: 4000
+    # Minimum tokens for a valid benchmark result - fewer means unreliable metrics
+    # Checked against completion_tokens (actual tokens); also passes with min_chunks+ streaming chunks
+    min_tokens: 300
+    # Minimum streaming chunks for a valid benchmark result (independent of min_tokens)
+    min_chunks: 50
+    # Anthropic-specific: budget_tokens for extended thinking (Anthropic API only).
+    # budget_tokens must be < max_tokens, hence min(target-1, budget).
+    # Set to null to disable Anthropic extended thinking entirely (param omitted).
+    anthropic_thinking_budget: 3200
+    # Test prompts
+    prompts:
+      # Suffix appended to every random prompt - drives output length for TPS/TTFT measurement
+      # Structured sections ensure models produce enough tokens to hit the target_total_tokens ceiling
+      suffix: " Write a detailed essay on this topic. Include ALL of the following sections, each at least 350 words:\n1. Introduction - Define the topic and its significance\n2. Historical Background - Trace the evolution and key milestones\n3. Core Principles - Explain the fundamental mechanisms\n4. Current Applications - Provide detailed real-world examples\n5. Challenges and Criticisms - Analyze limitations and counterarguments\n6. Comparative Analysis - Compare with alternative approaches\n7. Future Prospects - Predict developments and emerging trends\n8. Conclusion - Synthesize findings and offer final insights\nDo not skip any section."
+
+  health_check:
+    enabled: true           # true/false - enables lightweight health checks (reachability + TTFT only)
+    interval: 300         # Health check interval in seconds (more frequent than benchmarks)
+    # Maximum output tokens for health checks - model stops naturally at this limit.
+    # Always-thinking models that exhaust the budget on reasoning are treated as alive
+    # (finish_reason="length" is accepted as success).
+    max_tokens: 10
+    # Short prompts designed to elicit ≤5 tokens naturally.
+    # Models that produce more are stopped by max_tokens - no early-termination code needed.
+    prompts:
+      - "Respond with OK."
+      - "Say hello."
+      - "Reply with: done"
+      - "Answer: yes or no?"
+      - "Write: OK"
+
+  # Capability probe - detects model features (vision, tools, structured output, cache, thinking)
+  # via lightweight completion requests. Probe test timeout uses testing.timeout above.
+  probe:
+    enabled: true          # true/false - enables capability detection probes
+    interval: 86400       # How often to probe in seconds
+    max_tokens: 150       # Token budget for each probe request (reasoning models need more)
+
+metrics:
+  # How many days of test results to retain in SQLite (older results are deleted periodically by cleanup_interval)
+  retention_days: 90
+  # Uptime calculation window in seconds
+  uptime_window: 86400  # 24 hours
+  # Duration of recent_history kept in memory (number + s/m/h/d/w/mo, e.g. 2h, 3d, 1w, 1mo)
+  # Cap is dynamically computed: (duration / health_interval + duration / benchmark_interval) × 1.2 buffer
+  recent_history: 2d
+  # Minimum data points needed to compute composite scores
+  min_data_points_score: 3
+  # Minimum data points per half for trend computation
+  min_data_points_trend: 2
+  # Maximum rows returned by history queries (modal charts, history tables)
+  history_query_limit: 2000
+  # How often (seconds) to re-fetch provider page titles/logos
+  provider_fetch_ttl: 86400
+  # How often (seconds) to run DB cleanup: delete old results and orphaned provider/model rows
+  cleanup_interval: 3600
+  # How often (seconds) to flush buffered SQLite writes and WS broadcasts
+  write_batch_interval: 2.0
+  # Maximum buffered results before triggering an immediate flush
+  write_batch_max_buffer: 200
+
+# Auto-archive: automatically archive models/providers that have been offline
+# (error status) for a continuous period. Shares the same archive mechanism
+# as manual `archived: true` in models.yaml - archived models stop being tested
+# but remain visible in the UI (use the Archived status filter to find them).
+# Per-model or per-provider opt-out: set `auto_archive: false` in models.yaml.
+auto_archive:
+  enabled: true
+  # Auto-archive after this many seconds of continuous offline (error status).
+  # Uses duration strings: 1h, 2d, 1w, etc. (bare numbers = seconds)
+  offline_duration: 1d
+
+# Stall detection thresholds (inter-token latency)
+stalls:
+  # User-visible stall: ITL above this is a pause a human can perceive
+  # Research: >500ms is clearly noticeable, >1000ms is a hard stall
+  visible_threshold_ms: 500
+  # Hiccup detection now uses adaptive threshold: hiccup_multiplier × median ITL per model.
+  # This fixed threshold is only used as fallback when median is unavailable.
+  hiccup_threshold_ms: 100
+  # Adaptive hiccup multiplier: ITL > this × median is a hiccup
+  hiccup_multiplier: 3
+  # Tokens-per-chunk ratio above which delivery is considered batched (log-only, does not affect metrics)
+  batching_log_threshold: 1.5
+
+# WebSocket settings
+websocket:
+  # Protocol-level WS ping/pong is configured via uvicorn CLI flags
+  # (--ws-ping-interval, --ws-ping-timeout) - see Dockerfile
+  # Empty list = all origins allowed (not recommended for production)
+  allowed_origins:
+    - *site_url
+
+# Notification settings
+notifications:
+  enabled: true             # true/false - master toggle for all notification delivery (push, webhook, in-app)
+  # HTTP timeout for webhook delivery (seconds)
+  webhook_timeout: 10
+  # Push notification TTL (seconds)
+  push_ttl: 86400
+  # Which events trigger notifications
+  events:
+    offline: true          # Model goes down
+    recovered: true       # Model recovers (from offline or degraded)
+    degraded: true        # Model degraded (stream error, insufficient output, or critical metrics)
+    degraded_tps: true    # TPS drops below chosen tier
+    recovered_tps: true   # TPS recovers above chosen tier
+    degraded_ttft: true   # TTFT rises above chosen tier
+    recovered_ttft: true  # TTFT recovers below chosen tier
+    provider_changed: true  # Provider added to or removed from config
+    model_changed: true     # Model added to or removed from existing provider
+  # Tier index that triggers degraded notifications (0=Excellent, 1=Good, 2=OK, 3=Bad, 4=Critical)
+  degraded_tps_tier: 2   # OK = tier 2
+  degraded_ttft_tier: 2  # OK = tier 2
+  # In-app toast notifications in the dashboard
+  in_app:
+    enabled: true           # true/false - enables in-app toast notifications in the dashboard
+    toast_duration_ms: 5000  # How long toasts stay visible (milliseconds)
+    history_size: 50          # Max notifications kept in in-memory history
+    retention_days: 7         # Days before in-app history entries are deleted
+    api_response_cap: 30     # Max notifications returned by /api/notifications
+  # Rate limits for API endpoints (requests per minute)
+  rate_limits:
+    prefs_per_minute: 12        # Max PUT /api/push/preferences requests per minute per client
+    push_test_per_minute: 6     # Max POST /api/push/test requests per minute per client
+    subscribe_per_minute: 20   # Max POST /api/push/subscribe requests per minute per IP
+    validate_per_minute: 30    # Max GET /api/push/validate requests per minute per IP
+    client_error_per_minute: 10 # Max POST /api/client-error requests per minute per IP
+  # Webhook channels - each receives HTTP POST with JSON payload on events
+  # Set to [] when not using webhooks. See commented examples below for configuration.
+  # Payload: {"event": "offline"|"recovered"|"degraded"|"degraded_tps"|"recovered_tps"|"degraded_ttft"|"recovered_ttft",
+  #           "model_key": "...", "model_name": "...", "provider": "...",
+  #           "timestamp": "...", "uptime_pct": 95.0, "url": "<app.site_url>",
+  #           (degraded events) "degraded_reason": "...", "critical_metrics": [...], "metric_values": {...},
+  #           (metric events) "current_value": ..., "prev_value": ..., "current_tier": ..., "prev_tier": ...}
+  webhooks: []
+  # Example webhook configurations:
+  # webhooks:
+  #   - name: "Slack"
+  #     url: "https://hooks.slack.com/services/..."
+  #     # Optional secret for HMAC-SHA256 signing (X-ModelWatcher-Signature header)
+  #     secret: ""
+  #     # Optional: filter which providers/models trigger this webhook
+  #     filters:
+  #       providers: []   # empty = all providers
+  #       models: []      # empty = all models
+  #     events:
+  #       offline: true
+  #       recovered: true
+  #   - name: "Discord"
+  #     url: "https://discord.com/api/webhooks/..."
+  #     events:
+  #       offline: true
+  #       recovered: false
+
+# Color thresholds for the dashboard
+# Shared tier palette: label + tailwind color class for each quality level (best→worst)
+# All metric thresholds reference these tiers by position.
+# Semantic colors (error=red, connected=green, etc.) are fixed UI patterns, not tier-based.
+color_thresholds:
+  tiers:
+    - { label: "Excellent", color: "accent-400" }
+    - { label: "Good", color: "success-400" }
+    - { label: "OK", color: "warn-400" }
+    - { label: "Bad", color: "danger-400" }
+    - { label: "Critical", color: "danger-700" }
+  uptime:
+    higher_is_better: true
+    # ≥99%: Excellent, ≥95%: Good, ≥85%: OK, ≥50%: Bad, else: Critical
+    thresholds: [99, 95, 85, 50, 0]
+  tps:
+    higher_is_better: true
+    # ≥100: Excellent, ≥50: Good, ≥30: OK, ≥15: Bad, else: Critical
+    thresholds: [100, 50, 30, 15, 0]
+  ttft:
+    higher_is_better: false
+    # <1000ms: Excellent, <3000ms: Good, <5000ms: OK, <10000ms: Bad, else: Critical
+    thresholds: [1000, 3000, 5000, 10000, 0]
+  stall_count:
+    higher_is_better: false
+    # 0: Excellent, 1: Good, 2: OK, 3-14: Bad, 15+: Critical
+    thresholds: [1, 2, 3, 15, 0]
+  raw_p99_itl_ms:
+    higher_is_better: false
+    # <30ms: Excellent, <80ms: Good, <200ms: OK, <500ms: Bad, else: Critical
+    thresholds: [30, 80, 200, 500, 0]
+  raw_median_itl_ms:
+    higher_is_better: false
+    # <15ms: Excellent, <25ms: Good, <40ms: OK, <80ms: Bad, else: Critical
+    thresholds: [15, 25, 40, 80, 0]
+  raw_max_itl_ms:
+    higher_is_better: false
+    # <200ms: Excellent, <500ms: Good, <1000ms: OK, <5000ms: Bad, else: Critical
+    thresholds: [200, 500, 1000, 5000, 0]
+  effective_itl_tail_ratio:
+    higher_is_better: false
+    # <2.0: Excellent, <4.0: Good, <10: OK, <25: Bad, else: Critical
+    # P99/P50 ratio: how much worse the slowest 1% of tokens are vs the median.
+    # 1.0 = perfectly uniform, 2.0 = slow tokens are 2× median, 25+ = severely inconsistent.
+    thresholds: [2.0, 4.0, 10, 25, 0]
+  chunk_token_ratio:
+    higher_is_better: false
+    # ≤1.5: Excellent (token-by-token), <3.0: Good (mild batching), <5.0: OK (moderate), <8.0: Bad (severe), else: Critical (broken)
+    # Tokens per SSE delivery. Ratio × ITL = perceived inter-chunk interval.
+    # At 25ms ITL: 1.5=37ms(instant), 3=75ms(borderline), 5=125ms(stuttery), 8+=200ms+(broken)
+    thresholds: [1.5, 3.0, 5.0, 8.0, 0]
+  burst_arrival_pct:
+    higher_is_better: false
+    # <5%: Excellent (negligible impact), 5-15%: Good (minor noise), 15-30%: OK (noticeable),
+    # 30-50%: Bad (p99 unreliable), ≥50%: Critical (median is measurement artifact)
+    thresholds: [5, 15, 30, 50, 0]
+  chunk_token_cv:
+    higher_is_better: false
+    # Coefficient of variation of per-chunk token counts (stdev/mean).
+    # 0 = uniform chunks (1-token-per-chunk), high = wildly variable chunk sizes.
+    # <0.1: Excellent (uniform), <0.3: Good (mild variance), <0.5: OK (moderate),
+    # <1.0: Bad (highly variable), ≥1.0: Critical (extreme batching inconsistency)
+    thresholds: [0.1, 0.3, 0.5, 1.0, 0]
+
+# Composite scores configuration
+# Each score is a weighted average of metric tiers (0-1 normalized). Weights should sum to 1.0.
+scores:
+  # Consistency: measures streaming stability (stalls, tail latency, batching, burst arrivals)
+  consistency:
+    weights: { stall_count: 0.35, effective_itl_tail_ratio: 0.30, chunk_token_ratio: 0.20, burst_arrival_pct: 0.15 }
+  # Speed: measures raw throughput and time-to-first-token
+  speed:
+    weights: { ttft_ms: 0.50, tps: 0.50 }
+  # Reliability: combines uptime (availability) with quality (consistency + speed scores)
+  reliability:
+    availability_weight: 0.75
+    quality_weight: 0.25
+
+# Time ranges for modal chart views
+# Client uses these for range pills; server uses for bucketed aggregation
+# key: duration identifier (number + s/m/h/d/w/mo, e.g. "4h", "7d", "30d")
+# label: display text shown on range pills
+# seconds is auto-computed from key by config.py
+time_ranges:
+  - { key: "4h", label: "4h" }
+  - { key: "12h", label: "12h" }
+  - { key: "24h", label: "24h" }
+  - { key: "3d", label: "3d" }
+  - { key: "7d", label: "7d" }
+  - { key: "14d", label: "14d" }
+  - { key: "30d", label: "30d" }
+  - { key: "90d", label: "90d" }

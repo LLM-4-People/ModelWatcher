@@ -1,0 +1,30 @@
+# Build-based Docker Compose configuration for ModelWatcher.
+# Use this for local development or when you need to build the image from source.
+# All runtime configuration (HOST, PORT, TZ, restart, API keys, etc.) goes in .env.
+
+services:
+  modelwatcher:
+    build: .
+    container_name: 'modelwatcher'
+    env_file: .env
+    # Development override: enable uvicorn --reload for backend code changes
+    command: ["sh", "-c", "uvicorn backend.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080} --reload --reload-dir backend --loop uvloop --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --log-level warning --ws-ping-interval 30 --ws-ping-timeout 90"]
+    volumes:
+      # Read-only: backend/, frontend/, etc. (uvicorn --reload watches via inotify, works on :ro)
+      - ".:/app:ro"
+      # Read-write: config dir only (config.py strips reset_epoch from models.yaml in-place)
+      - "./config:/app/config:rw"
+      # Read-write: SQLite DB, VAPID keys, favicons
+      - "./data:/app/data:rw"
+    ports:
+      - '127.0.0.1:${PORT}:${PORT}'
+    restart: "${restart}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"

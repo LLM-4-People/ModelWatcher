@@ -1,0 +1,52 @@
+# Audit suite configuration
+#
+# Defines automated compliance test suites that run against monitored LLM
+# endpoints. Currently, the only compatible suite is SynBad. The suite system
+# is designed to be extensible - additional suite providers will be added
+# in the future.
+#
+# Audit test timeout uses testing.timeout from app.yaml (no per-audit timeout here).
+# Suite version is auto-detected at runtime from the installed npm package.
+# To change the version, update package.json and rebuild the Docker image.
+#
+# ── Top-level fields ────────────────────────────────────────────────────────
+#
+# Required:
+#   enabled   true/false - master toggle for audit tests
+#   interval  How often to run audit tests (seconds or duration string: 6h, 1d, etc.)
+#   suites    Dict of suite configurations (keyed by suite name)
+#
+# ── Suite fields ────────────────────────────────────────────────────────────
+#
+# Required:
+#   url       Source/reference URL for the test suite
+#   enabled   true/false - whether this suite runs
+#   stream    true/false - test streaming API calls (vs non-streaming)
+#   count     Repetitions per eval (any failure = overall fail)
+#
+# Optional:
+#   skip_reasoning    Auto-detected from model_info_cache (thinking field).
+#                     Models with thinking=true run reasoning evals; thinking=false skip them.
+#                     Set explicitly to override auto-detection.
+#                     null (or omit) = auto-detect
+#                     true  = always skip reasoning evals
+#                     false = always run reasoning evals
+#   reasoning_effort  Controls reasoning depth for reasoning-capable models.
+#                     null (or omit) = don't send the parameter
+#                     "low" | "medium" | "high"
+#   only              null (or omit) = run all evals
+#                     Or a specific eval path (e.g., "evals/reasoning") to run a subset
+
+audit:
+  enabled: true
+  interval: 21600        # 6 hours - API compliance changes slowly
+
+  suites:
+    synbad:
+      url: "https://github.com/synthetic-lab/synbad"
+      enabled: true
+      stream: true
+      count: 1
+      # skip_reasoning: false        # null = auto-detect from model capabilities
+      # reasoning_effort: null        # null | "low" | "medium" | "high"
+      # only: null                    # null = run all evals, or "evals/reasoning" for a subset
