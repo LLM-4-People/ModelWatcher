@@ -653,8 +653,10 @@ async def get_audit(request: Request):
         if err:
             return err
         history = await asyncio.to_thread(db_probe.get_audit_history, model_key, limit, since)
-        # Read latest from SQLite (full data with suites), not model_cache (lightweight, suites stripped)
-        latest = history[-1] if history else None
+        # Latest from in-memory model_cache (already full with suites) — no DB hit.
+        # Fall back to DB history tail only in the window before the first runtime
+        # audit lands in cache (e.g. fresh process loading from DB at startup).
+        latest = st.model_cache.get(model_key, {}).get("last_audit_result") or (history[-1] if history else None)
         return orjson_response({"latest": latest, "history": history})
     latest_all = await asyncio.to_thread(db_probe.get_latest_audit_results)
     return orjson_response(latest_all)

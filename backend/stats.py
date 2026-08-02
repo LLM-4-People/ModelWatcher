@@ -19,7 +19,10 @@ def _lightweight_audit(ar: dict | None) -> dict | None:
     """Strip suites from audit result for summary/polling responses.
 
     Cards only need top-level ``total``/``pass_rate``/``success``/``duration_ms``.
-    The modal lazy-loads full suites with evals via ``/api/audit?model=X``.
+    The cache always stores the full result; this is only removed at the
+    /api/metrics collection-response boundary to reduce polling payload.
+    The modal lazy-loads full suites with evals via ``/api/audit?model=X``,
+    which serves the ``latest`` from model_cache (no DB hit).
     """
     if not ar:
         return None
