@@ -747,8 +747,8 @@ async def _run_audit_managed(model_key: str):
 
         result = await run_audit_test(model_key)
         if result is None:
+            # Don't update last_audit_epoch on failure - allow retry sooner
             entry = st.model_cache.get(model_key, {})
-            entry["last_audit_epoch"] = time.time()
             entry["last_audit_result"] = None
             st.invalidate_metrics_cache()
             st.log.info("Audit %s: no result (suite unavailable?)", model_key)
@@ -758,8 +758,7 @@ async def _run_audit_managed(model_key: str):
         result["ts_epoch"] = ts
         result["model_key"] = model_key
 
-        from backend.db import insert_audit_result
-        await asyncio.to_thread(insert_audit_result, model_key, result)
+        await asyncio.to_thread(db_probe.insert_audit_result, model_key, result)
 
         entry = st.model_cache.get(model_key, {})
         entry["last_audit_epoch"] = ts
@@ -783,13 +782,11 @@ async def _run_audit_managed(model_key: str):
         st.log.debug("audit cancelled %s", model_key)
         _ae = st.model_cache.get(model_key)
         if _ae:
-            _ae["last_audit_epoch"] = time.time()
             _ae["last_audit_result"] = None
     except Exception as e:
         st.log_error(f"Uncaught exception in audit for {model_key}", e)
         _ae = st.model_cache.get(model_key)
         if _ae:
-            _ae["last_audit_epoch"] = time.time()
             _ae["last_audit_result"] = None
     finally:
         st.running_audit.discard(model_key)

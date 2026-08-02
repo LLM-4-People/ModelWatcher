@@ -413,6 +413,8 @@ Defines automated compliance test suites that run against monitored LLM endpoint
 
 Audit test timeout uses `testing.timeout` from `app.yaml` (no per-audit timeout here). Suite version is auto-detected at runtime from the installed npm package.
 
+**Requirement**: the SynBad CLI (`@syntheticlab/synbad` npm package) must be installed - it is included in the Docker image and installed by `npm install` for bare-metal setups. Without it, audits are silently skipped and a warning is logged once per hour.
+
 ```yaml
 audit:
   enabled: true

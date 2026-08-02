@@ -341,15 +341,17 @@ def _synbad_available() -> bool:
 
 _SUITE_CHECKS["synbad"] = _synbad_available
 
-_audit_unavailable_logged = False
+
+_audit_unavailable_logged = 0.0
 
 
 def audit_available() -> bool:
     """Check whether at least one enabled audit suite has its dependency installed.
 
     Returns False when audit is disabled or no suite runner is ready. Logs a
-    warning once when audit is enabled but no suite is available, then suppresses
-    repeated logs to avoid log spam.
+    warning when audit is enabled but no suite is available. The warning is
+    re-logged at most once per hour so a broken install stays visible in the
+    logs without flooding them.
     """
     global _audit_unavailable_logged
     if not st.c.audit_enabled:
@@ -361,12 +363,16 @@ def audit_available() -> bool:
         any_enabled = True
         check = _SUITE_CHECKS.get(suite_name)
         if check and check():
+            # Reset throttling when the suite becomes available again
+            _audit_unavailable_logged = 0.0
             return True
-    if any_enabled and not _audit_unavailable_logged:
-        suites = [s for s, c in st.c.audit_suites.items() if c.get("enabled", False)]
-        st.log.warning("Audit enabled but no suite runner is available (suites: %s). "
-                       "Install missing dependencies (e.g., npm install).", suites)
-        _audit_unavailable_logged = True
+    if any_enabled and (time.time() - _audit_unavailable_logged) >= 3600:
+        st.log.warning(
+            "Audit enabled but synbad binary not found at %s. Audits will NOT run. "
+            "Fix: run 'npm install --omit=dev' in the app directory (or set SYNBAD_BIN).",
+            _SYNBAD_BIN,
+        )
+        _audit_unavailable_logged = time.time()
     return False
 
 

@@ -35,15 +35,11 @@ WORKDIR /opt
 COPY package.json ./
 RUN npm install --omit=dev
 
-# Copy application code
+# Copy application code (config/ is NOT copied - mounted at runtime; examples live in the repo)
 WORKDIR /app
 COPY backend/ backend/
-COPY config/ config/
 COPY frontend/ frontend/
 COPY --from=css-builder /tmp/frontend/tailwind.min.css /opt/frontend/tailwind.min.css
-
-# Copy example configs (actual config/*.yaml are gitignored - mounted at runtime)
-COPY config/*.example config/
 
 # Health check - uses the /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

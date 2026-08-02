@@ -286,6 +286,22 @@ docker compose -f compose.modelwatcher.yaml up -d --build
 
 The build-based compose mounts the full source tree read-only and enables uvicorn `--reload` for backend code changes. Config changes in `./config/` are hot-reloaded by `watchfiles` without container restart.
 
+## Running without Docker (bare metal)
+
+If you run the app directly on a host instead of using the Docker image:
+
+```bash
+git clone https://github.com/LLM-4-People/ModelWatcher.git
+cd ModelWatcher
+python3 -m pip install -r requirements.txt
+npm install               # installs synbad (audit runner) + Tailwind (CSS build)
+npm run build:css
+# Set up .env and config/ as described above
+python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 --loop uvloop
+```
+
+**Audits require `node_modules/.bin/synbad`** (installed by `npm install`, or set `SYNBAD_BIN`). Without it, audits silently skip - the scheduler logs a warning once per hour. If audits stop working (e.g., after `git clean -fdx` or a fresh clone), re-run `npm install`.
+
 ## Scaling considerations
 
 ModelWatcher is designed as a **single-process** application:
