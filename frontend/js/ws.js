@@ -190,7 +190,13 @@ function handleWS(msg) {
     if (!msg.model || !state.metrics[msg.model]) return;
     const ar = msg.result;
     if (ar) {
-      state.metrics[msg.model].last_audit_result = ar;
+      // Don't overwrite a full cached result (with suites+evals, fetched via
+      // /api/audit) with a payload that has no suites, or the modal's
+      // "LAST AUDITS" section disappears on the next re-render.
+      const prev = state.metrics[msg.model].last_audit_result;
+      if (ar.suites != null || !prev || prev.suites == null) {
+        state.metrics[msg.model].last_audit_result = ar;
+      }
       state.metrics[msg.model].last_audit_epoch = ar.ts_epoch;
       state.metrics[msg.model].testing_audit = false;
       scheduleUI({ models: [msg.model], modal: { modelId: msg.model } });

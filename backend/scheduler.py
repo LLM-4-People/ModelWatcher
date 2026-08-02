@@ -772,11 +772,10 @@ async def _run_audit_managed(model_key: str):
                      result.get("pass_rate", 0) * 100, result.get("duration_ms", 0) / 1000,
                      " - FAILED" if not result.get("success") else "")
 
-        from backend.stats import _lightweight_audit
         await ws_mgr.broadcast({
             "type": "audit_result",
             "model": model_key,
-            "result": _lightweight_audit(audit_stripped),
+            "result": audit_stripped,
         })
     except asyncio.CancelledError:
         st.log.debug("audit cancelled %s", model_key)
