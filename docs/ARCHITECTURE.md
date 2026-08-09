@@ -256,7 +256,7 @@ All persistence is via SQLite with WAL mode at `data/metrics.db`.
 | Table | Purpose | Key columns |
 |-------|---------|-------------|
 | `test_results` | Individual test run records | `model_key`, `ts_epoch`, `available`, `degraded`, `ttft_ms`, `tps`, `error`, `retry_attempt`, `test_type`, `provider`, `success`, `degraded_reason`, `critical_metrics`, all metric fields |
-| `model_state` | Per-model aggregated state | `model_key`, `status`, `degraded_source`, `uptime_pct`, `total_tests`, `total_success`, `first_ts_epoch`, `reliability_score`, `trends_json`, `archived`, `updated_at` |
+| `model_state` | Per-model aggregated state | `model_key`, `status`, `degraded_source`, `uptime_pct`, `total_tests`, `total_success`, `first_ts_epoch`, `reliability_score`, `trends_json`, `archived`, `archived_by`, `updated_at` |
 | `providers` | Provider metadata (TTL-cached) | `name`, `api_url`, `last_fetched_at`, `page_title`, `logo_path`, `extra` |
 | `model_info` | Per-model metadata from registry/provider APIs/HuggingFace | `model_key`, `provider`, `model_id`, `display_name`, `context_window`, `output_context`, `input_price`, `output_price`, `cache_price`, `reasoning_price`, `image_price`, `supports_vision`, `supports_tools`, `supports_structured_output`, `supports_cache`, `thinking`, `modalities`, `tokenizer`, `description`, `created`, `owner`, `license`, `quantization`, `served_by`, `architecture`, `param_count`, `num_experts`, `num_experts_per_tok`, `num_shared_experts`, `moe_intermediate_size`, `fingerprint` |
 | `push_subscriptions` | Web push subscription data | `endpoint`, `p256dh`, `auth`, `client_id`, `prefs`, `created_at`, `last_active` |
@@ -281,7 +281,7 @@ All persistence is via SQLite with WAL mode at `data/metrics.db`.
 `config_watcher()` uses `watchfiles.awatch()` on the `config/` directory (filtered to `.yaml`/`.yml` files). On change:
 
 1. `reload_config(log_changes=True)` - reloads YAML files, updates `c`, rebuilds `model_registry`.
-2. `apply_db_changes(result)` - syncs SQLite: delete orphaned rows, upsert registry, apply archive directives.
+2. `apply_db_changes(result)` - syncs SQLite: delete orphaned rows, upsert registry, reconcile archive state (`archived: true` → manual archive; `archived: false` unarchives; removing the directive clears manual archives only; auto-archived rows persist and are tracked via `model_state.archived_by`).
 3. Logs added/removed models and interval changes.
 4. Broadcasts WS `config_updated` unconditionally.
 5. Sets the wake event to reschedule the scheduler.

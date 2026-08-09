@@ -112,6 +112,8 @@ List providers and their models. Logos are base64 data URIs (e.g. `data:image/pn
 - `200`: Object keyed by provider name, each with `models` (list), `api_url` (string\|null), `logo` (data URI\|null), `title` (string\|null).
 - `422`: Validation error.
 
+Each model entry carries `id`, `provider`, `model_id`, `name`. Archived models additionally include `archived: true` and `archived_by` (`"manual"` from a `models.yaml` directive, or `"auto"` from the scheduler's auto-archive).
+
 **Example**:
 ```bash
 curl http://localhost:8080/api/providers

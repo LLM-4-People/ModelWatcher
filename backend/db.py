@@ -240,6 +240,7 @@ CREATE TABLE IF NOT EXISTS model_state (
     reliability_score REAL,
     trends_json     TEXT,
     archived        INTEGER NOT NULL DEFAULT 0,
+    archived_by     TEXT,
     updated_at      REAL
 );
 
@@ -542,9 +543,9 @@ def insert_result(model_key: str, record: dict):
 def upsert_model_state(model_key: str, state_kwargs: dict):
     """Insert or update model state row. Must be called from thread executor.
 
-    The ``archived`` column is intentionally excluded from the ON CONFLICT
-    UPDATE SET - it is managed exclusively by ``set_archived()`` so test-result
-    writes never clobber the archive flag.
+    The ``archived``/``archived_by`` columns are intentionally excluded from
+    the ON CONFLICT UPDATE SET - they are managed exclusively by
+    ``set_archived()`` so test-result writes never clobber the archive state.
     """
     if _write_conn is None:
         log.error("upsert_model_state: DB write connection is None for %s", model_key)
@@ -570,8 +571,13 @@ def upsert_model_state(model_key: str, state_kwargs: dict):
         )
 
 
-def set_archived(model_keys: set[str], archived: bool):
+def set_archived(model_keys: set[str], archived: bool, source: str | None = None):
     """Set the archived flag for multiple models, persisting to SQLite.
+
+    ``source`` records HOW the model was archived - ``'manual'`` (models.yaml
+    directive) or ``'auto'`` (scheduler auto-archive) - into ``archived_by``.
+    When unarchiving (``archived=False``), ``archived_by`` is always cleared
+    regardless of the ``source`` argument.
 
     Creates model_state rows if they don't exist (with default status='unknown').
     Must be called from thread executor.
@@ -579,20 +585,26 @@ def set_archived(model_keys: set[str], archived: bool):
     if not model_keys or _write_conn is None:
         return
     val = 1 if archived else 0
+    src = source if archived else None
     with _write_lock:
         _write_conn.executemany(
-            "INSERT INTO model_state (model_key, archived) VALUES (?, ?) "
-            "ON CONFLICT (model_key) DO UPDATE SET archived = excluded.archived",
-            [(k, val) for k in model_keys],
+            "INSERT INTO model_state (model_key, archived, archived_by) VALUES (?, ?, ?) "
+            "ON CONFLICT (model_key) DO UPDATE SET archived = excluded.archived, "
+            "archived_by = excluded.archived_by",
+            [(k, val, src) for k in model_keys],
         )
         _write_conn.commit()
 
 
-def load_all_archived() -> set[str]:
-    """Return set of model_keys with archived=1. Must be called from thread executor."""
+def load_all_archived() -> dict[str, str | None]:
+    """Return {model_key: archived_by} for all archived=1 rows.
+
+    ``archived_by`` is 'manual', 'auto', or None (rows archived before the
+    source-tracking migration).  Must be called from thread executor.
+    """
     with _ReadConn() as conn:
-        return {r["model_key"] for r in conn.execute(
-            "SELECT model_key FROM model_state WHERE archived = 1"
+        return {r["model_key"]: r["archived_by"] for r in conn.execute(
+            "SELECT model_key, archived_by FROM model_state WHERE archived = 1"
         ).fetchall()}
 
 

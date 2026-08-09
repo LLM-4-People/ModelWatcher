@@ -250,9 +250,25 @@ function degradedBadge(lt, status) {
   return `<span class="badge-chip" data-tip="degraded" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">\u26a0</span><span class="${STATUS_TEXT.degraded}">Degraded</span></span>`;
 }
 
+function _archivedBadgeHTML(source) {
+  const tip = source === 'manual' ? 'archivedManual' : source === 'auto' ? 'archivedAuto' : 'archived';
+  return `<span class="badge-chip badge-archived" data-tip="${tip}" tabindex="0"><span class="text-text-muted">\u2139</span><span class="text-text-faint">Archived</span></span>`;
+}
+
 function archivedBadge(entry) {
   if (!entry.archived) return '';
-  return `<span class="badge-chip badge-archived" data-tip="archived" tabindex="0"><span class="text-text-muted">\u2139</span><span class="text-text-faint">Archived</span></span>`;
+  return _archivedBadgeHTML(entry.archived_by);
+}
+
+function _allArchived(entries) {
+  return entries?.length > 0 && entries.every(e => e.archived);
+}
+
+// Source shared by every entry in a fully-archived provider (null when mixed/unknown)
+function _providerArchivedSource(entries) {
+  const first = entries[0]?.archived_by || null;
+  if (!first) return null;
+  return entries.every(e => e.archived_by === first) ? first : null;
 }
 
 function topBadges(lt, status, data, entry) {
@@ -693,13 +709,15 @@ function _providerSectionHTML(provider, entries, m, collapsed) {
     : entries.map(entry => buildCardDOM(entry, m[entry.id] || {})).join('');
   const gridAttr = isDeferred ? ` data-deferred="${entries.length}"` : '';
   const url = state.providerUrls[provider];
+  const allArchived = _allArchived(entries);
   return `
-  <div class="mb-2 provider-section rounded-xl" data-provider-slug="${providerSlug}" id="section-${providerSlug}">
+  <div class="mb-2 provider-section rounded-xl${allArchived ? ' provider-archived' : ''}" data-provider-slug="${providerSlug}" id="section-${providerSlug}">
     <div class="provider-header" id="header-${providerSlug}" data-provider-slug="${providerSlug}">
       <button class="provider-toggle" aria-expanded="${!isCollapsed}" aria-controls="content-${providerSlug}" aria-label="Toggle ${esc(provider)} models" tabindex="0">
         ${chevronSVG('provider-chevron', 16)}
       </button>
       ${providerName(provider, url, 'text-sm font-semibold text-text-secondary uppercase tracking-wider', state.providerLogos[provider], state.providerTitles[provider])}
+      ${allArchived ? _archivedBadgeHTML(_providerArchivedSource(entries)) : ''}
       ${providerCountBadges(counts, total, providerSlug, provider)}
     </div>
     <div id="content-${providerSlug}" class="provider-content${isCollapsed ? ' collapsed' : ''}" role="region" aria-labelledby="header-${providerSlug}">
@@ -727,7 +745,9 @@ export function buildProviderSections() {
     if (!grouped[entry.provider]) grouped[entry.provider] = [];
     grouped[entry.provider].push(entry);
   }
-  const order = state.providerOrder.length ? state.providerOrder : Object.keys(grouped);
+  // Fully-archived providers sink to the bottom (stable sort keeps alphabetical order within groups)
+  const order = (state.providerOrder.length ? state.providerOrder : Object.keys(grouped)).slice()
+    .sort((a, b) => (_allArchived(grouped[a]) ? 1 : 0) - (_allArchived(grouped[b]) ? 1 : 0));
   const collapsed = _collapsedProviders();
 
   container.innerHTML = order.map(provider => {
@@ -778,7 +798,7 @@ export function updateProviderCounts(changedModelId) {
 
 const _BASE_MODEL_KEYS = new Set(['id', 'provider', 'model_id', 'name', 'hf_id', 'api_url']);
 // Delivered by /api/providers on every fetch - absence means "not set", so never carry stale values forward
-const _REFRESHED_MODEL_KEYS = new Set(['archived']);
+const _REFRESHED_MODEL_KEYS = new Set(['archived', 'archived_by']);
 
 export function applyProvidersData(providers) {
   const oldMap = state._modelMap;

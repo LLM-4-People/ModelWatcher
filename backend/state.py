@@ -99,7 +99,10 @@ model_registry: list = []
 # Disabling auto-archive stops NEW auto-archiving but does NOT unarchive existing
 # auto-archived models - use `archived: false` in models.yaml to explicitly unarchive.
 # Per-model opt-out: `auto_archive: false` in models.yaml exempts from auto-archiving.
-_archived_model_keys: set = set()
+# Maps model_key -> archive source: 'manual' (models.yaml directive),
+# 'auto' (scheduler auto-archive), or None (archived before source tracking).
+# Membership checks (`key in _archived_model_keys`) work unchanged.
+_archived_model_keys: dict = {}
 
 
 # ── Provider RTT history (for jitter calculation) ──────────────────────────────

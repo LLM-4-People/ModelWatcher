@@ -230,7 +230,7 @@ Config changes (providers, intervals, thresholds) take effect without a server r
 
 1. `watchfiles.awatch()` watches `config/` for `.yaml`/`.yml` changes.
 2. `reload_config()` reloads all YAML files, updates the `c` namespace, and rebuilds `model_registry`.
-3. `apply_db_changes()` syncs SQLite: deletes orphaned rows for removed models, upserts the new registry, applies archive directives.
+3. `apply_db_changes()` syncs SQLite: deletes orphaned rows for removed models, upserts the new registry, and reconciles archive state (`archived: true` → manual archive, `archived: false` unarchives, removing the directive clears manual archives only, auto-archives persist with `archived_by: auto`).
 4. WS `config_updated` is broadcast to all connected clients.
 5. The scheduler's wake event fires, rescheduling tests with the new intervals.
 6. Provider favicons and model metadata are re-fetched.

@@ -857,20 +857,29 @@ async def apply_db_changes(result: dict):
         if model_registry:
             await asyncio.to_thread(db.batch_sync_registry, list(model_registry), models_cfg.get("providers", []))
 
-        # Reconcile archived state: YAML directives are force-applied to DB,
-        # then the full archived set is loaded back into memory.
-        #   archived: true  → force archive in DB
-        #   archived: false → force unarchive in DB
-        #   absent          → preserve existing DB state
+        # Reconcile archived state: the YAML directive controls MANUAL archives
+        # (archived_by='manual'); auto-archive rows are runtime-managed and are
+        # NOT cleared by config reloads.  Full archived set is loaded back into
+        # memory afterwards.
+        #   archived: true  → force archive (archived_by='manual')
+        #   archived: false → force unarchive (any source - the escape hatch
+        #                     for re-enabling auto-archived models)
+        #   absent          → clear a MANUAL archive only, so removing the
+        #                     directive re-enables the model and auto-archive
+        #                     may take over again if it stays offline
+        current = await asyncio.to_thread(db.load_all_archived)
         archive_true = {e["id"] for e in model_registry if e.get("archived") is True}
         archive_false = {e["id"] for e in model_registry if e.get("archived") is False}
+        stale_manual = {k for k, src in current.items() if src == "manual"} - archive_true - archive_false
+        if stale_manual:
+            await asyncio.to_thread(db.set_archived, stale_manual, False)
         if archive_true:
-            await asyncio.to_thread(db.set_archived, archive_true, True)
+            await asyncio.to_thread(db.set_archived, archive_true, True, "manual")
         if archive_false:
             await asyncio.to_thread(db.set_archived, archive_false, False)
         # Prune trailing failures for newly archived models only (skip
         # already-archived ones to avoid repeated no-op scans on every reload)
-        newly_archived = archive_true - st._archived_model_keys
+        newly_archived = archive_true - current.keys()
         if newly_archived:
             await asyncio.to_thread(db.prune_trailing_failures, newly_archived)
         loaded = await asyncio.to_thread(db.load_all_archived)

@@ -508,12 +508,14 @@ def _model_offline_for(key: str, threshold: float, now: float) -> bool:
 async def apply_auto_archive():
     """Archive models/providers offline (error status) for >= offline_duration.
 
-    Persists archived state to SQLite via db.set_archived so it survives
-    server restarts and config reloads. Models/providers with
-    auto_archive: false in models.yaml are exempt. Disabling the feature
-    via auto_archive.enabled: false stops new auto-archiving but does NOT
-    unarchive models that were previously auto-archived - use archived: false
-    in models.yaml to explicitly unarchive.
+    Persists archived state to SQLite via db.set_archived (archived_by='auto')
+    so it survives server restarts and config reloads. Exempt models:
+    auto_archive: false, and explicit `archived: false` (an active unarchive
+    directive keeps the model enabled; removing the directive returns it to
+    auto-archive management). Disabling the feature via auto_archive.enabled:
+    false stops new auto-archiving but does NOT unarchive models that were
+    previously auto-archived - use archived: false in models.yaml to
+    explicitly unarchive.
     """
     if not st.c.auto_archive_enabled:
         return
@@ -527,13 +529,15 @@ async def apply_auto_archive():
             continue
         if entry.get("auto_archive") is False:
             continue
+        if entry.get("archived") is False:
+            continue
         provider_models.setdefault(entry["provider"], []).append(entry["id"])
 
     newly_archived: list[str] = []
     for provider, keys in provider_models.items():
         # If ALL models in a provider are offline for >= threshold, archive them all
         if keys and all(_model_offline_for(k, threshold, now) for k in keys):
-            st._archived_model_keys.update(keys)
+            st._archived_model_keys.update({k: "auto" for k in keys})
             newly_archived.extend(keys)
             st.log.info(
                 "Auto-archived provider %s: all %d model(s) offline for >= %ds",
@@ -542,7 +546,7 @@ async def apply_auto_archive():
         else:
             for key in keys:
                 if _model_offline_for(key, threshold, now):
-                    st._archived_model_keys.add(key)
+                    st._archived_model_keys[key] = "auto"
                     newly_archived.append(key)
                     st.log.info(
                         "Auto-archived model %s: offline for >= %ds",
@@ -550,7 +554,7 @@ async def apply_auto_archive():
                     )
 
     if newly_archived:
-        await asyncio.to_thread(db.set_archived, set(newly_archived), True)
+        await asyncio.to_thread(db.set_archived, set(newly_archived), True, "auto")
         await asyncio.to_thread(db.prune_trailing_failures, set(newly_archived))
         st.invalidate_metrics_cache()
         st.invalidate_providers_cache()
