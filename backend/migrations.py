@@ -534,6 +534,12 @@ def _migration_archived_flag(conn: sqlite3.Connection):
                      [("archived", "INTEGER NOT NULL DEFAULT 0")])
 
 
+def _migration_archived_by(conn: sqlite3.Connection):
+    """Track archive source: 'manual' (models.yaml) vs 'auto' (auto-archive)."""
+    _migrate_columns(conn, "model_state", "archived_by",
+                     [("archived_by", "TEXT")])
+
+
 def _migration_prune_archived_trailing(conn: sqlite3.Connection):
     """One-shot: prune trailing failed test_results for already-archived models.
 
@@ -608,6 +614,7 @@ _MIGRATIONS: list[tuple[int, str, object]] = [
     (28, "drop_ping_jitter",            _migration_drop_ping_jitter),
     (29, "archived_flag",               _migration_archived_flag),
     (30, "prune_archived_trailing",     _migration_prune_archived_trailing),
+    (31, "archived_by",                 _migration_archived_by),
 ]
 
 _LATEST_VERSION = _MIGRATIONS[-1][0]

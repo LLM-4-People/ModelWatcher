@@ -71,6 +71,8 @@ export const HELP = {
   notifSettings: 'Open settings panel.<br>Configure notification event filters, push delivery, and per-provider alerts.',
   helpToggle: 'Help, glossary, and reference panel.<br>Metric explanations and status legends.',
   archived: 'This model or provider is archived. Archived models are not tested but historical data is preserved.',
+  archivedManual: 'Manually archived via models.yaml. Archived models are not tested but historical data is preserved.<br>Remove the archived flag from the config to re-enable.',
+  archivedAuto: 'Auto-archived after being offline for an extended period. Archived models are not tested but historical data is preserved.<br>Set archived: false in the config to re-enable.',
   githubRepo: 'View source code on GitHub.<br>Report issues, contribute, or star the project.',
 };
 

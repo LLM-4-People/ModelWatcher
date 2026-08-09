@@ -137,8 +137,9 @@ export function setMetrics(metrics) {
           if (prev[e] !== undefined && incoming[e] === undefined) incoming[e] = prev[e];
         }
         if (prev.card_buckets !== undefined && incoming.card_buckets === undefined) incoming.card_buckets = prev.card_buckets;
-        // archived is server-owned: the API omits the key when a model is not archived
+        // archived/archived_by are server-owned: the API omits them when a model is not archived
         if (incoming.archived === undefined) delete prev.archived;
+        if (incoming.archived_by === undefined) delete prev.archived_by;
       }
     }
     for (const k of Object.keys(metrics)) {

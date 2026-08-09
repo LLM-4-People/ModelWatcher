@@ -137,6 +137,9 @@ def get_providers_grouped(providers: set[str] | None = None) -> dict:
                  "model_id": entry["model_id"], "name": entry["name"]}
             if entry["id"] in _archived_model_keys:
                 m["archived"] = True
+                src = _archived_model_keys[entry["id"]]
+                if src:
+                    m["archived_by"] = src
             model_entries.append(m)
         result[name] = {
             "models": model_entries,

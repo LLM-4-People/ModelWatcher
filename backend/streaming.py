@@ -1129,19 +1129,6 @@ def _build_stream_request(
     for k, v in provider.get("headers", {}).items():
         headers[k] = v
 
-    # api_token_limit is the total-output ceiling used by extract_completion_tokens
-    # to reject implausible provider-reported counts. For Anthropic thinking it
-    # includes the thinking budget; for health checks it equals max_tokens.
-    if is_health:
-        max_tokens = c.health_max_tokens
-        api_token_limit = max_tokens
-    elif is_anthropic and c.anthropic_thinking_budget:
-        max_tokens = c.benchmark_target_tokens
-        api_token_limit = max_tokens + min(max_tokens - 1, c.anthropic_thinking_budget)
-    else:
-        max_tokens = c.benchmark_target_tokens
-        api_token_limit = max_tokens
-
     # Per-request timeout: health checks get the same timeout as benchmarks.
     request_timeout = c.test_timeout
 
@@ -1151,6 +1138,23 @@ def _build_stream_request(
     if model_opts:
         req_opts.update(model_opts)
     token_param = req_opts.get("token_param", "both")
+
+    # Optional per-model/per-provider max_tokens override. Applied to BOTH
+    # health and benchmark requests - reasoning models need a larger output
+    # budget than the default health_max_tokens (10) to emit an answer, and
+    # NanoGPT-style gateways refuse to run them with tiny ceilings
+    # (empty_response). A positive override wins over the per-test-type default.
+    req_max_tokens = req_opts.get("max_tokens")
+    if is_health:
+        max_tokens = req_max_tokens if req_max_tokens else c.health_max_tokens
+        api_token_limit = max_tokens
+    elif is_anthropic and c.anthropic_thinking_budget:
+        max_tokens = req_max_tokens if req_max_tokens else c.benchmark_target_tokens
+        # budget_tokens must be < max_tokens, hence min(target-1, budget)
+        api_token_limit = max_tokens + min(max_tokens - 1, c.anthropic_thinking_budget)
+    else:
+        max_tokens = req_max_tokens if req_max_tokens else c.benchmark_target_tokens
+        api_token_limit = max_tokens
 
     if is_anthropic:
         headers["x-api-key"] = api_key

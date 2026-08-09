@@ -142,7 +142,7 @@ Duration strings: `s` (seconds), `m` (minutes), `h` (hours), `d` (days), `w` (we
 | `enabled` | bool | (required) | Master toggle. Stops new auto-archiving but does NOT unarchive previously archived models. |
 | `offline_duration` | duration | (required) | Auto-archive after this much continuous offline (error status). Uses duration strings (e.g. `1d`, `2d`, `1w`). |
 
-Archived models stop being tested but remain visible in the UI. Per-model or per-provider opt-out: set `auto_archive: false` in `models.yaml`.
+Archived models stop being tested but remain visible in the UI. Auto-archived models are recorded with `archived_by: auto` in the DB (manual YAML archives use `manual`) so the two sources can be tracked separately. Per-model or per-provider opt-out: set `auto_archive: false` in `models.yaml` (an explicit `archived: false` also keeps a model exempt from auto-archiving until the directive is removed).
 
 ### `stalls` - stall detection thresholds (inter-token latency)
 
@@ -341,7 +341,7 @@ Defines LLM providers and their models. API keys reference environment variables
 | `model_info_url` | no | string | Per-model detail endpoint; `{model_id}` is replaced with the model ID. |
 | `headers` | no | dict | Custom HTTP headers merged into all API requests to this provider |
 | `request_options` | no | object | Control which request parameters are sent (see below) |
-| `archived` | no | bool | `true` = archive all models; `false` = explicitly unarchive; omit = preserve existing state |
+| `archived` | no | bool | `true` = archive all models (manual); `false` = explicitly unarchive (any source) and stay exempt from auto-archive; omit = clear a manual archive (auto-archive state is preserved) |
 | `auto_archive` | no | bool | `false` = exempt this provider from auto-archiving |
 | `reset_epoch` | no | bool | `true` = force immediate retest of all models after config reload (stripped from YAML after processing) |
 

@@ -152,6 +152,9 @@
     min-width: 44px; min-height: 44px;
   }
   .provider-toggle:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+  .provider-archived { box-shadow: inset 3px 0 0 var(--color-surface-400); }
+  .provider-archived .provider-header { opacity: .6; transition: opacity .15s ease; }
+  .provider-archived .provider-header:hover { opacity: 1; }
   .provider-link {
     text-decoration: none; color: inherit; touch-action: manipulation; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     display: inline-flex; align-items: center; padding-top: 6px; padding-bottom: 6px;

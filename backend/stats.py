@@ -1292,6 +1292,9 @@ def build_summary_response(providers: list[str] | None = None, detail_providers:
         }
         if is_archived:
             d["archived"] = True
+            src = _archived_model_keys.get(k)
+            if src:
+                d["archived_by"] = src
         he = entry.get("last_health_error")
         if he is not None and not is_archived:
             d["health_error"] = he
