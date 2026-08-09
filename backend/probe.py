@@ -67,6 +67,20 @@ def _resolve_token_param(provider_cfg: dict) -> str:
     return req_opts.get("token_param", "both")
 
 
+def _resolve_max_tokens(provider_cfg: dict, default: int) -> int:
+    """Resolve the output-token budget, honoring a per-model/per-provider
+    `request_options.max_tokens` override. Used by probes so reasoning models
+    with a larger budget requirement (NanoGPT-style gateways refuse tiny
+    ceilings with `empty_response`) don't fail detection probes.
+    """
+    req_opts = {**provider_cfg.get("request_options", {})}
+    model_opts = provider_cfg.get("_model_request_options")
+    if model_opts:
+        req_opts.update(model_opts)
+    override = req_opts.get("max_tokens")
+    return override if override else default
+
+
 def _apply_token_params(body: dict, max_tokens: int, token_param: str) -> None:
     if token_param != "legacy":
         body["max_completion_tokens"] = max_tokens
@@ -371,7 +385,7 @@ async def run_probe_test(model_key: str) -> dict:
     headers = _build_headers(api_key, is_a, custom_headers)
     client = st.get_http_client()
     timeout = st.c.test_timeout
-    max_tokens = st.c.probe_max_tokens
+    max_tokens = _resolve_max_tokens(provider_cfg, st.c.probe_max_tokens)
     token_param = _resolve_token_param(provider_cfg)
 
     t0 = time.monotonic()
