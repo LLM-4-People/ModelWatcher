@@ -1597,7 +1597,7 @@ def _status_change_event(old_status: str, new_status: str) -> str | None:
 
 def _track_degraded_since(entry: dict, new_status: str, old_status: str) -> float | None:
     """Track degradation start time for recovery grounding. Returns degraded_since if recovered."""
-    if new_status in ("error", "degraded") and old_status not in ("error", "degraded", "unknown"):
+    if new_status in ("error", "degraded") and old_status not in ("error", "degraded"):
         entry["degraded_since"] = time.time()
         return None
     if new_status == "online":

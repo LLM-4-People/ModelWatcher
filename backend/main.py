@@ -144,8 +144,14 @@ async def _startup():
 
     for mk, entry in st.model_cache.items():
         if entry.get("status") in ("error", "degraded"):
+            ts = None
             lt = entry.get("last_test")
-            ts = lt.get("ts_epoch") if lt else None
+            if lt:
+                ts = lt.get("ts_epoch")
+            if not ts:
+                he = entry.get("last_health_epoch")
+                if he:
+                    ts = he
             if ts:
                 entry["degraded_since"] = ts
 
