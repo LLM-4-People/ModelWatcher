@@ -2,7 +2,7 @@
 // transforms. Card charts normalize 0-1; modal charts use raw values with dual
 // Y-axes. Bucket transforms handle both dedup (shared) and legacy array formats.
 import { state, CC } from './state.js';
-import { esc, BP_SM, isTouchDevice } from './utils.js';
+import { esc, BP_SM, isTouchDevice, STATUS_GLYPH } from './utils.js';
 import { fmtMsCompactPlain } from './format.js';
 import { showTip, hideTip } from './tooltips.js';
 import { chartColors as _chartColors } from './theme.js';
@@ -208,8 +208,8 @@ export function formatTooltipItem(ctx) {
   const b = buckets?.[idx];
 
   const _MARKER_CFG = {
-    'Failure': { key: 'failure_count', icon: '\u2717', colorVar: '--color-notif-offline', noun: 'failure', nounPlural: 'failures' },
-    'Degraded': { key: 'degraded_count', icon: '\u26a0', colorVar: '--color-notif-degraded', noun: 'degraded', nounPlural: 'degraded' },
+    'Failure': { key: 'failure_count', icon: STATUS_GLYPH.failed, colorVar: '--color-notif-offline', noun: 'failure', nounPlural: 'failures' },
+    'Degraded': { key: 'degraded_count', icon: STATUS_GLYPH.degraded, colorVar: '--color-notif-degraded', noun: 'degraded', nounPlural: 'degraded' },
   };
   const mc = _MARKER_CFG[dsLabel];
   if (mc) {
@@ -482,14 +482,14 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
     return {
       responsive: false, maintainAspectRatio: false, devicePixelRatio: 1,
       layout: { padding: { left: 0, right: 4, top: 0, bottom: 0 } },
-      events: isTouchDevice ? [] : undefined,
+      events: isTouchDevice() ? [] : undefined,
       interaction: { mode: 'index', intersect: false },
       spanGaps: true,
       plugins: {
         legend: { display: false },
         tooltip: {
           enabled: false,
-          external: isTouchDevice ? null : externalTooltip,
+          external: isTouchDevice() ? null : externalTooltip,
           callbacks: { label: (ctx) => formatTooltipItem(ctx), labelColor: (ctx) => ({ borderColor: ctx.dataset.borderColor, backgroundColor: ctx.dataset.borderColor }) },
           filter: _TOOLTIP_FILTER,
         },

@@ -2,8 +2,8 @@
 // buildCardDOM constructs full innerHTML; updateCardDOM does targeted element
 // updates on WS messages. Metric tiles render from last_test only (no fallback).
 import { state, recalcCounts, setMetrics, LS } from './state.js';
-import { slug, esc, logError, logDebug, logTag, chevronSVG, setHTML, setClass, setText } from './utils.js';
-import { tpsColor, ttftColor, uptimeColor, p99ItlColor, scoreColor, trendArrow, trendColor, trendDelta, fmtTps, fmtTTFT, fmtUptime, fmtSeconds, fmtMsCompact, fmtNum, timeAgo, fmtContext, fmtCritical, STATUS_TEXT, degradedDescHTML, recordErrorText, freshnessTextCls, fmtEventTime, fmtSince, metricCellHTML } from './format.js';
+import { slug, esc, logError, logDebug, logTag, chevronSVG, setHTML, setClass, setText, STATUS_GLYPH, SEP_TEXT, sepHTML, segmentsHTML } from './utils.js';
+import { tpsColor, ttftColor, uptimeColor, p99ItlColor, scoreColor, trendArrow, trendColor, trendDelta, fmtTps, fmtTTFT, fmtUptime, fmtSeconds, fmtMsCompact, fmtNum, timeAgo, fmtContext, fmtCritical, STATUS_TEXT, degradedDescHTML, recordErrorText, freshnessTextCls, fmtEventTime, fmtSince, metricCellHTML, testTypeLabel } from './format.js';
 import { updateStatusLegend } from './help.js';
 import { observeChart, unobserveChartsInContainer, initPendingChartsInContainer, disconnectLazyChartObserver, CHART_VIEWS, getCardView, switchCardView, _fetchMetaClear, chartPhHTML } from './chart.js';
 import { fetchProviderMetrics, fetchProviders, fetchModelInfoCapabilities } from './api.js';
@@ -106,7 +106,7 @@ function providerCountBadges(counts, total, slugStr, providerName) {
   const idAttr = slugStr ? ` id="phealth-${slugStr}"` : '';
   const hasAny = _STATUS_ORDER.some(k => counts[k] > 0);
   const scoreHTML = providerName ? _providerScoreBadges(providerName) : '';
-  const sep = scoreHTML ? '<span class="provider-score-sep"></span>' : '';
+  const sep = scoreHTML ? sepHTML('rule') : '';
   const archivedCount = providerName ? state.models.filter(e => e.provider === providerName && e.archived).length : 0;
   const archivedBadge = archivedCount > 0 ? `<span class="text-text-faint">${archivedCount}</span>` : '';
   if (!hasAny) {
@@ -155,7 +155,7 @@ function _scoreItem(label, score, trend, placeholder = false) {
   if (score == null && !placeholder) return null;
   if (placeholder) {
     const html = `<span class="text-text-muted">${label}</span><span class="text-text-faint">--%</span>`;
-    const tipLine = `<span class="text-text-muted">${fullName}</span> <span class="text-text-muted">\u00b7</span> <span class="text-text-faint">--%</span>`;
+    const tipLine = `<span class="text-text-muted">${fullName}${SEP_TEXT}</span><span class="text-text-faint">--%</span>`;
     return { html, tipLine };
   }
   const color = scoreColor(score);
@@ -171,18 +171,16 @@ function _scoreItem(label, score, trend, placeholder = false) {
   } else if (trend?.direction === 'stable' && trend?.unit) {
     trendHTML = ` <span class="text-text-muted">${trendDelta(trend)}</span>`;
   }
-  const tipLine = `<span class="text-text-muted">${fullName}</span> <span class="text-text-muted">\u00b7</span> <span class="${color}">${fmtNum(score, 0)}%</span>${trendHTML ? ' <span class="text-text-muted">\u00b7</span>' : ''}${trendHTML}`;
+  const tipLine = `<span class="text-text-muted">${fullName}${SEP_TEXT}</span><span class="${color}">${fmtNum(score, 0)}%</span>${trendHTML ? `<span class="text-text-muted">${SEP_TEXT}</span>` : ''}${trendHTML}`;
   return { html, tipLine };
 }
-
-const _SEP = '<span class="score-sep"></span>';
 
 function _scoreGroupHTML(items, tipLines, tipPrefix, headerLine) {
   if (!items.length) return '';
   const tipId = `${tipPrefix}-${++_tipIdCounter}`;
   const content = (headerLine ? headerLine + '<div class="mb-0.5"></div>' : '') + tipLines.join('<br>');
   registerTip(tipId, content);
-  return `<span class="score-group" data-tip-id="${tipId}" tabindex="0">${items.join(_SEP)}</span>`;
+  return `<span class="score-group" data-tip-id="${tipId}" tabindex="0">${items.join(sepHTML('rule'))}</span>`;
 }
 
 function _trendSinceLine(data) {
@@ -235,9 +233,9 @@ function offlineBadge(lt, status, data) {
   const errText = _statusMessage(data, lt) || 'Endpoint unreachable';
   const eventTs = _eventTimestamp(data, lt);
   const tsStr = eventTs ? fmtEventTime(eventTs) : '';
-  const tipText = tsStr ? `${tsStr} · ${errText}` : errText;
+  const tipText = tsStr ? `${tsStr}${SEP_TEXT}${errText}` : errText;
   registerTip(tipId, esc(tipText));
-  return `<span class="badge-chip" data-tip="offline" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">\u2717</span><span class="${STATUS_TEXT.error}">Offline</span></span>`;
+  return `<span class="badge-chip" data-tip="offline" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">${STATUS_GLYPH.failed}</span><span class="${STATUS_TEXT.error}">Offline</span></span>`;
 }
 
 function degradedBadge(lt, status) {
@@ -247,7 +245,7 @@ function degradedBadge(lt, status) {
   const tsStr = lt.timestamp ? fmtEventTime(lt.timestamp) : '';
   const tip = tsStr ? `<span class="opacity-60">${esc(tsStr)}</span><br>${desc}` : desc;
   registerTip(tipId, tip);
-  return `<span class="badge-chip" data-tip="degraded" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">\u26a0</span><span class="${STATUS_TEXT.degraded}">Degraded</span></span>`;
+  return `<span class="badge-chip" data-tip="degraded" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">${STATUS_GLYPH.degraded}</span><span class="${STATUS_TEXT.degraded}">Degraded</span></span>`;
 }
 
 function archivedBadge(entry) {
@@ -272,16 +270,16 @@ export function reliableIndicator(reliable, compact, lt, tipKey = 'itlReliable')
   if (lt && (lt.degraded || lt.success === false)) return '';
   if (lt && lt.burst_arrival_pct != null && lt.burst_arrival_pct >= 30) return '';
   const cls = compact ? 'text-[10px]' : 'text-xs';
-  return `<span class="${cls} text-success-400" data-tip="${tipKey}" tabindex="0"><span class="tip-label">✓</span></span>`;
+  return `<span class="${cls} text-success-400" data-tip="${tipKey}" tabindex="0"><span class="tip-label">${STATUS_GLYPH.ok}</span></span>`;
 }
 
 // ── Check status line (single chip with inline last-OK) ─────────────────
 
 const _CHK_SYM = {
-  ok:       { ch: '●', cls: 'text-success-400' },
-  degraded: { ch: '▲', cls: 'text-warn-400' },
-  failed:   { ch: '✗', cls: 'text-danger-400' },
-  unknown:  { ch: '●', cls: 'text-text-faint' },
+  ok:       { ch: STATUS_GLYPH.ok, cls: 'text-success-400' },
+  degraded: { ch: STATUS_GLYPH.degraded, cls: 'text-warn-400' },
+  failed:   { ch: STATUS_GLYPH.failed, cls: 'text-danger-400' },
+  unknown:  { ch: STATUS_GLYPH.unknown, cls: 'text-text-faint' },
 };
 
 function _healthSym(success) {
@@ -297,61 +295,59 @@ function _benchSym(lt) {
   return _CHK_SYM.ok;
 }
 
-function _checkSlot(sym, label, age, interval, lastOkEpoch) {
-  const hasData = age != null && interval > 0;
-  const timeText = hasData ? fmtSeconds(age) : '-';
-  const timeCls = hasData ? freshnessTextCls(age, interval) : 'text-text-faint';
-  const failed = sym === _CHK_SYM.failed;
-  let html = `<span class="${sym.cls} text-xs leading-none">${sym.ch}</span>`;
-  html += `<span class="text-text-muted text-xs">${label}</span>`;
-  html += `<span class="${timeCls} text-xs font-medium">${timeText}</span>`;
-  if (failed && lastOkEpoch != null) {
-    const okAge = Date.now() / 1000 - lastOkEpoch;
-    const okCls = freshnessTextCls(okAge, interval);
-    html += `<span class="last-ok"><span class="text-text-faint text-xs">·</span>`;
-    html += `<span class="text-text-muted text-xs">OK</span>`;
-    html += `<span class="${okCls} text-xs font-medium">${fmtSeconds(okAge)}</span></span>`;
+function _auditSym(ar) {
+  if (!ar || ar.pass_rate == null) return _CHK_SYM.unknown;
+  if (ar.total === 0) return _CHK_SYM.degraded;
+  if (ar.pass_rate >= 1) return _CHK_SYM.ok;
+  return ar.pass_rate > 0 ? _CHK_SYM.degraded : _CHK_SYM.failed;
+}
+
+// Full label on wide screens, short one on phones (CSS picks which shows)
+function _testTypeLabelHTML(type) {
+  if (!testTypeLabel(type)) return '';
+  return `<span class="text-text-muted"><span class="chk-label-full">${esc(testTypeLabel(type))}</span><span class="chk-label-short">${esc(testTypeLabel(type, 'short'))}</span></span>`;
+}
+
+// Age colored by freshness against the check interval; without a known interval the age shows uncolored
+function _ageHTML(age, interval) {
+  if (age == null) return '<span class="text-text-faint font-medium">-</span>';
+  const cls = interval > 0 ? freshnessTextCls(age, interval) : 'text-text-faint';
+  return `<span class="${cls} font-medium">${fmtSeconds(age)}</span>`;
+}
+
+function _checkSlot(sym, type, age, interval, lastOkEpoch) {
+  const parts = [`<span class="${sym.cls} leading-none">${sym.ch}</span>`, _testTypeLabelHTML(type), _ageHTML(age, interval)];
+  if (sym === _CHK_SYM.failed && lastOkEpoch != null) {
+    // The separator lives inside the group, so hiding .last-ok on phones leaves no orphan dot
+    parts.push(segmentsHTML([sepHTML('dot'), '<span class="text-text-muted">OK</span>', _ageHTML(Date.now() / 1000 - lastOkEpoch, interval)], { cls: 'last-ok' }));
   }
-  return html;
+  return segmentsHTML(parts);
 }
 
 export function modalCheckLineHTML(data) {
   const lt = data.last_test || {};
   const now = Date.now() / 1000;
-  const hInterval = state.healthInterval || 60;
-  const bInterval = state.benchmarkInterval || 3600;
-
-  const hAge = data.health_ts_epoch != null ? (now - data.health_ts_epoch) : null;
-  const hSym = _healthSym(data.health_success);
-
-  const bAge = data.last_benchmark_epoch != null ? (now - data.last_benchmark_epoch) : null;
-  const bSym = _benchSym(lt);
-
-  let slots = '';
-  if (state.healthEnabled) {
-    slots += _checkSlot(hSym, '<span class="chk-label-full">Health</span><span class="chk-label-short">HC</span>', hAge, hInterval, data.health_success_epoch);
-    slots += '<span class="score-sep"></span>';
-  }
-  slots += _checkSlot(bSym, '<span class="chk-label-full">Bench</span><span class="chk-label-short">BM</span>', bAge, bInterval, data.last_success_epoch);
+  const age = epoch => (epoch != null ? now - epoch : null);
+  const slots = [];
+  if (state.healthEnabled) slots.push(_checkSlot(_healthSym(data.health_success), 'health', age(data.health_ts_epoch), state.healthInterval, data.health_success_epoch));
+  slots.push(_checkSlot(_benchSym(lt), 'benchmark', age(data.last_benchmark_epoch), state.benchmarkInterval, data.last_success_epoch));
   if (state.auditEnabled && (data.last_audit_result != null || data.last_audit_epoch != null)) {
-    const aInterval = state.auditInterval || 21600;
-    const aAge = data.last_audit_epoch != null ? (now - data.last_audit_epoch) : null;
-    const ar = data.last_audit_result;
-    const aTotal = ar?.total;
-    const aPassRate = ar?.pass_rate;
-    const aSym = !ar ? _CHK_SYM.unknown : aPassRate == null ? _CHK_SYM.unknown : aTotal === 0 ? _CHK_SYM.degraded : aPassRate >= 1 ? _CHK_SYM.ok : aPassRate > 0 ? _CHK_SYM.degraded : _CHK_SYM.failed;
-    slots += '<span class="score-sep"></span>';
-    slots += _checkSlot(aSym, '<span class="chk-label-full">Audit</span><span class="chk-label-short">AU</span>', aAge, aInterval, null);
+    slots.push(_checkSlot(_auditSym(data.last_audit_result), 'audit', age(data.last_audit_epoch), state.auditInterval, null));
   }
+  return segmentsHTML(slots, { sep: 'rule', cls: 'badge-chip test-line', attrs: 'data-tip="checkLine" tabindex="0"' });
+}
 
-  return `<span class="badge-chip test-line">${slots}</span>`;
+// The only writer of #modal-chk: open, live update and the periodic age refresh all come through here
+export function renderModalCheckLine(modelId) {
+  const el = document.getElementById('modal-chk');
+  if (!el) return;
+  el.dataset.mwModel = modelId;
+  setHTML(el, modalCheckLineHTML(state.metrics[modelId] || {}));
 }
 
 export function updateTimeAgoLabels() {
   const modalEl = document.getElementById('modal-chk');
-  if (modalEl && modalEl.closest('#modal:not(.hidden)')) {
-    setHTML(modalEl, modalCheckLineHTML(state.metrics[modalEl.dataset.mwModel] || {}));
-  }
+  if (modalEl && modalEl.closest('#modal:not(.hidden)')) renderModalCheckLine(modalEl.dataset.mwModel);
   document.querySelectorAll('.notif-item-time[data-ts]').forEach(el => {
     setText(el, timeAgo(el.dataset.ts));
   });
@@ -370,7 +366,7 @@ function _modelInfoLine(entry, safeId) {
   const ctxIn = entry.context_window ? fmtContext(entry.context_window) : '';
   const ctxOut = entry.output_context ? fmtContext(entry.output_context) : '';
   if (ctxIn || ctxOut) {
-    if (ctxIn && ctxOut && ctxOut !== ctxIn) parts.push(`<span class="text-text-muted">${ctxIn} in</span><span class="text-text-faint/40 mx-0.5">/</span><span class="text-text-muted">${ctxOut} out</span>`);
+    if (ctxIn && ctxOut && ctxOut !== ctxIn) parts.push(segmentsHTML([`<span class="text-text-muted">${ctxIn} in</span>`, `<span class="text-text-muted">${ctxOut} out</span>`], { sep: 'slash' }));
     else if (ctxIn) parts.push(`<span class="text-text-muted">${ctxIn} ctx</span>`);
     else parts.push(`<span class="text-text-muted">${ctxOut} out</span>`);
   }
@@ -378,7 +374,7 @@ function _modelInfoLine(entry, safeId) {
   if (entry.param_count && entry.param_count !== '0') parts.push(`<span class="text-text-muted">${esc(entry.param_count)}</span>`);
   if (entry.num_experts) parts.push(`<span class="text-text-muted">MoE</span>`);
   if (!parts.length) return safeId ? `<div id="mi-${safeId}" class="hidden"></div>` : '';
-  return `<div id="mi-${safeId}" class="mt-1 text-[10px] text-text-faint flex items-center gap-1 truncate">${parts.join('<span class="text-text-faint/40 mx-0.5">·</span>')}</div>`;
+  return `<div id="mi-${safeId}" class="mt-1 text-[10px] text-text-faint truncate">${segmentsHTML(parts, { sep: 'dot' })}</div>`;
 }
 
 function buildCardDOM(entry, data) {
@@ -468,14 +464,15 @@ export function updateCardDOM(modelId) {
 }
 
 
+const _SCHEDULE_ICON = '<span aria-hidden="true">\u23f1</span>';
+
 export function renderSchedule() {
   const el = document.getElementById('schedule-info');
   if (!el) return;
-  const parts = [];
-  if (state.healthEnabled && state.healthInterval) parts.push(`\u23f1 Health: ${fmtSeconds(state.healthInterval)}`);
-  parts.push(`Bench: ${fmtSeconds(state.benchmarkInterval || 3600)}`);
-  if (state.auditEnabled && state.auditInterval) parts.push(`Audit: ${fmtSeconds(state.auditInterval)}`);
-  setHTML(el, parts.join(' \u00b7 '));
+  const parts = [[state.healthEnabled, 'health', state.healthInterval], [true, 'benchmark', state.benchmarkInterval], [state.auditEnabled, 'audit', state.auditInterval]]
+    .filter(([enabled, type, interval]) => enabled && interval && testTypeLabel(type))
+    .map(([, type, interval]) => `<span>${esc(testTypeLabel(type))}: ${fmtSeconds(interval)}</span>`);
+  setHTML(el, parts.length ? segmentsHTML([_SCHEDULE_ICON, segmentsHTML(parts, { sep: 'dot' })]) : '');
 }
 
 function _collapsedProviders() {

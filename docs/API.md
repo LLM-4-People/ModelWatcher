@@ -36,8 +36,9 @@ ModelWatcher exposes 15 REST endpoints across 7 tags. Interactive documentation 
   - [PUT /api/push/preferences](#put-apipushpreferences) - Update notification preferences
   - [POST /api/push/test](#post-apipushtest) - Send a test push notification
   - [GET /api/push/validate](#get-apipushvalidate) - Validate push endpoint registration
-- [Health](#health) - Service health check
-  - [GET /health](#get-health) - Service health check
+- [Health](#health) - Readiness and liveness checks
+  - [GET /health](#get-health) - Readiness check
+  - [GET /health/live](#get-healthlive) - Liveness check
 - [WebSocket](#websocket) - Real-time update channel
 
 ---
@@ -158,9 +159,17 @@ curl http://localhost:8080/api/config
   "last_run_ago_seconds": 13,
   "next_run_in_seconds": 1,
   "color_thresholds": {"tiers": [...], "uptime": {...}, "tps": {...}},
-  "time_ranges": [{"key": "4h", "label": "4h"}, ...]
+  "time_ranges": [{"key": "4h", "label": "4h"}, ...],
+  "status_values": ["online", "degraded", "error", "unknown"],
+  "test_types": ["benchmark", "health", "audit", "probe"],
+  "test_type_labels": {"health": {"full": "Health", "short": "HC"}, "benchmark": {"full": "Bench", "short": "BM"}, ...},
+  "chart_views": ["speed", "consistency", "scores", "health"],
+  "event_labels": {"offline": "Offline", ...},
+  "metric_labels": {"tps": "TPS", ...}
 }
 ```
+
+The label and value lists come from `backend/state.py` and are the only copy the frontend uses.
 
 ### GET /api/deploy-version
 
@@ -449,7 +458,7 @@ curl "http://localhost:8080/api/push/validate?endpoint=https://...&client_id=c_a
 
 ### GET /health
 
-Service health check. Returns only `{"status": "healthy" | "degraded"}` - server-side details are stripped to prevent information leakage. Used by the Docker `HEALTHCHECK`.
+Readiness check. Returns only `{"status": "healthy" | "degraded"}` - server-side details are stripped to prevent information leakage. Used by the Docker `HEALTHCHECK`.
 
 **Responses**:
 - `200`: `{"status": "healthy"}` - scheduler alive, models exist, at least one online or degraded.
@@ -465,6 +474,25 @@ curl http://localhost:8080/health
 
 ---
 
+### GET /health/live
+
+Liveness check: `200 {"status": "alive"}` whenever the server process answers, whatever the scheduler or the models are doing. The dashboard probes it while the server looks unreachable, so a total model outage (when `/health` answers 503) never shows as "Server unreachable".
+
+**Example**:
+```bash
+curl http://localhost:8080/health/live
+```
+```json
+{"status": "alive"}
+```
+
+---
+
 ## WebSocket
 
-In addition to the REST API, a WebSocket endpoint is available at `/ws` for real-time push updates. See [ARCHITECTURE.md](ARCHITECTURE.md) for the message types broadcast by the server.
+In addition to the REST API, a WebSocket endpoint is available at `/ws` for real-time push updates. The server broadcasts `testing`, `result`, `result_batch`, `audit_result`, `probe_result`, `notification`, `config_updated` and `server_shutdown` messages (see [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow behind them), plus the connection frames below.
+
+- **Origin check**: a page served by this server (its `Origin` host equals the `Host` header) is always accepted; other origins must be listed in `websocket.allowed_origins` (empty list = all).
+- **`hello`**: the first frame of every accepted socket, `{"type": "hello", "config": {...}}`. The client treats it as the proof of acceptance. `config` is the connection policy also injected into the page as `window.__MW_CONN__`: `ws_path`, `liveness_path`, `stale_after`, `reconnect`, `unreachable` and `close_codes`.
+- **`heartbeat`**: `{"type": "heartbeat"}` every `websocket.heartbeat_interval` seconds, even with `MW_DISABLE_TESTS`. The client reconnects after `websocket.stale_after` seconds without any frame.
+- **Close codes**: 1008 origin not allowed (permanent; the client retries at `reconnect.max_delay`), 1013 connection limit reached (transient), 1012 server restarting, 1009 message over `websocket.max_message_bytes`, 1011 handler error, 4000 client-side stale close. The client sends `{"type": "sync_prefs", "prefs": {...}}`, at most `websocket.sync_prefs_per_minute` times per minute.

@@ -8,7 +8,9 @@ were maintained independently with no contract test.
 """
 import pytest
 
-from backend.state import EVENT_LABELS, METRIC_LABELS, STATUS_VALUES, TEST_TYPES, CHART_VIEWS
+from backend.state import (
+    EVENT_LABELS, METRIC_LABELS, STATUS_VALUES, TEST_TYPES, TEST_TYPE_LABELS, CHART_VIEWS, BACKEND_DIR, FRONTEND_DIR,
+)
 
 
 def test_event_labels_is_complete():
@@ -62,8 +64,7 @@ def test_chart_views():
 
 def test_notifications_py_uses_canonical_labels():
     """notifications.py imports from state.py, not defining its own."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "backend" / "notifications.py"
+    src = BACKEND_DIR / "notifications.py"
     text = src.read_text()
     assert "from backend.state import" in text
     assert "EVENT_LABELS" in text or "_EVENT_LABELS = EVENT_LABELS" in text
@@ -73,8 +74,7 @@ def test_notifications_py_uses_canonical_labels():
 
 def test_frontend_does_not_define_type_labels():
     """frontend notifications.js should not define _TYPE_LABELS dict."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "js" / "notifications.js"
+    src = FRONTEND_DIR / "js" / "notifications.js"
     text = src.read_text()
     assert "const _TYPE_LABELS = {" not in text, \
         "frontend should not define _TYPE_LABELS (should use state.eventLabels from /api/config)"
@@ -82,8 +82,23 @@ def test_frontend_does_not_define_type_labels():
 
 def test_frontend_does_not_define_metric_labels():
     """frontend format.js should not define METRIC_LABELS dict."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "js" / "format.js"
+    src = FRONTEND_DIR / "js" / "format.js"
     text = src.read_text()
     assert "const METRIC_LABELS = {" not in text, \
         "frontend should not define METRIC_LABELS (should use state.metricLabels from /api/config)"
+
+
+def test_test_type_labels_cover_every_test_type():
+    """TEST_TYPE_LABELS has a full and a short label for each test type (the check line shows both)."""
+    assert set(TEST_TYPE_LABELS) == set(TEST_TYPES)
+    for key, labels in TEST_TYPE_LABELS.items():
+        assert set(labels) == {"full", "short"}, key
+        assert all(isinstance(v, str) and v for v in labels.values()), key
+    shorts = [labels["short"] for labels in TEST_TYPE_LABELS.values()]
+    assert len(set(shorts)) == len(shorts), "short labels must tell the test types apart"
+
+
+def test_config_endpoint_exposes_test_type_labels():
+    """routes.py sends TEST_TYPE_LABELS in /api/config and state.js applies it."""
+    assert '"test_type_labels": st.TEST_TYPE_LABELS' in (BACKEND_DIR / "routes.py").read_text()
+    assert "state.testTypeLabels = cfg.test_type_labels" in (FRONTEND_DIR / "js" / "state.js").read_text()

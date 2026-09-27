@@ -48,7 +48,7 @@ def _find_synbad_bin() -> str:
     on_path = shutil.which("synbad")
     if on_path:
         return on_path
-    return str(Path(__file__).resolve().parent.parent / "node_modules" / ".bin" / "synbad")
+    return str(st.BASE_DIR / "node_modules" / ".bin" / "synbad")
 
 
 _SYNBAD_BIN = _find_synbad_bin()

@@ -5,12 +5,7 @@ Thank you for your interest in contributing. This guide covers the essentials.
 ## Getting started
 
 1. **Fork and clone** the repository.
-2. **Install dependencies**: `pip install -r requirements.txt && npm install`
-3. **Copy config templates**: `cp config/app.yaml.example config/app.yaml && cp config/models.yaml.example config/models.yaml`
-4. **Set required env vars**: See `.env.example` for the full list.
-5. **Run the server**: `python -m uvicorn backend.main:app --reload --reload-dir backend`
-
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for a full local setup guide.
+2. **Set up and run locally** by following [docs/DEVELOPMENT.md#local-setup](docs/DEVELOPMENT.md#local-setup): a virtualenv for the Python dependencies, `npm install`, the config templates, `npm run build:css`, then uvicorn.
 
 ## Branch strategy
 
@@ -39,7 +34,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for a full local setup guide.
 - ES modules, no bundler
 - Named exports only (`export function foo()`, not `export default`)
 - No dynamic class names for Tailwind (e.g., `` `text-${color}` ``) - use explicit class maps so Tailwind's scanner finds them
-- All `catch` blocks must call `logError()` or re-throw - never empty `catch {}`
+- All `catch` blocks must log through the central loggers in `utils.js` or re-throw - never empty `catch {}`. Use `logError()` for unexpected failures and `logDebug()`/`logWarn()` for expected ones (a liveness probe while the server is down). `test_frontend_rules.py` enforces it
 - Every `.then()` chain must have a `.catch()`
 
 ### CSS
@@ -57,9 +52,9 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for a full local setup guide.
 
 ## Testing
 
-- Run the test suite: `npm test` (or `python3 -m pytest scripts/tests/ -v`)
+- Run the test suite: `npm test` (the pytest suite, then the JS unit tests); `npm run test:e2e` runs the browser tests
 - Add tests for bug fixes that reproduce the issue
-- Tests are in `scripts/tests/`
+- Tests are in `scripts/tests/` (pytest), `tests/js/` (node --test) and `tests/e2e/` (Playwright); see [docs/DEVELOPMENT.md#testing](docs/DEVELOPMENT.md#testing)
 - Do not run performance test scripts (`npm run perf`, `npm run stress`) - these are for the deployment environment only
 
 ## Commit messages

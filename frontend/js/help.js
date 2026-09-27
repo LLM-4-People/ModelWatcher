@@ -3,6 +3,7 @@
 import { HELP, esc, initSheetDrag, BP_SM, collapsibleHTML, setHTML, dotHTML } from './utils.js';
 import { tierScaleHTML, FRESHNESS_TIERS, TIER_DOT_BG, STATUS_DOT } from './format.js';
 import { state, _NOTIF_OPTS } from './state.js';
+import { CONN_STATES } from './conn.js';
 
 let _closeNotifPanelFn = null;
 export function setCloseNotifPanel(fn) { _closeNotifPanelFn = fn; }
@@ -16,7 +17,7 @@ const HELP_CATEGORIES = [
   { id: 'output', label: 'Output & Timing', keys: ['ok', 'testType', 'completionTokens', 'chunksObserved', 'reasoning', 'maxChunk', 'finishReason', 'chunkCv', 'tpot', 'totalLatency', 'thinkingDuration', 'errorMsg', 'retry'] },
   { id: 'network', label: 'Network & Stalls', keys: ['networkJitter', 'burstArrivals', 'burstArrival', 'frameBatch', 'shrinkage', 'stallFirst', 'stallLast', 'stallClusters', 'stallRatio'] },
   { id: 'charts', label: 'Charts', keys: ['chartSpeed', 'chartConsistency', 'chartScores', 'chartHealth'] },
-  { id: 'connection', label: 'Connection', keys: ['ws_connected', 'ws_disconnected', 'ws_connecting', 'ws_error', 'ws_restarting', 'ws_down'] },
+  { id: 'connection', label: 'Connection', keys: CONN_STATES.map(s => `ws_${s}`) },
   { id: 'notifications', label: 'Notifications', notifOpts: true },
 ];
 
@@ -37,9 +38,8 @@ const HELP_LABELS = {
   stallFirst: 'First stall', stallLast: 'Last stall', stallClusters: 'Stall clusters', stallRatio: 'Stall ratio',
   networkJitter: 'Net jitter', burstArrivals: 'Burst arrivals', burstArrival: 'Burst %',
   frameBatch: 'Frame batch', shrinkage: 'Shrinkage',
-  ws_connected: 'Connected', ws_disconnected: 'Disconnected',
-  ws_connecting: 'Connecting', ws_error: 'Connection error',
-  ws_restarting: 'Restarting', ws_down: 'Server down',
+  ws_connecting: 'Connecting', ws_connected: 'Connected', ws_restarting: 'Restarting',
+  ws_busy: 'Server busy', ws_rejected: 'Origin rejected', ws_disconnected: 'Disconnected', ws_down: 'Server down',
   chartSpeed: 'Speed chart', chartConsistency: 'Consistency chart',
   chartScores: 'Scores chart', chartHealth: 'Health chart',
 };

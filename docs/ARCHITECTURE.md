@@ -13,7 +13,7 @@ ModelWatcher is a real-time LLM API monitoring dashboard. This document covers t
   - [Key data structures](#key-data-structures) - model_registry, model_cache, recent_history, metrics_cache
 - [Module dependency graph](#module-dependency-graph) - Backend and frontend import structure
   - [Backend](#backend-backend---27-modules) - 27 modules, strictly unidirectional imports
-  - [Frontend](#frontendjs---22-modules) - 22 ES modules, no bundler, no build step
+  - [Frontend](#frontendjs---23-modules) - 23 ES modules, no bundler, no build step
 - [Single-source-of-truth principle](#single-source-of-truth-principle) - Config, labels, tiers, error format
 - [Error handling - the 3-net model](#error-handling---the-3-net-model)
 - [SQLite schema](#sqlite-schema) - 7 tables, WAL mode, connection model
@@ -203,7 +203,7 @@ batch.py (zero backend deps, imported by db.py and scheduler.py)
 - `config.py` uses lazy imports (inside function bodies) for `db.py`, `scheduler.py`, `stats.py`, `favicons.py`, `model_info.py`, `notifications.py` to avoid circular dependencies.
 - Modules that **mutate** shared state use `import backend.state as st` and access via `st.variable` (avoids value-copying from `from ... import` for rebound primitives).
 
-### Frontend (`frontend/js/` - 22 modules)
+### Frontend (`frontend/js/` - 23 modules)
 
 ```
 state.js ← utils.js ─── format.js
@@ -223,6 +223,8 @@ state.js ← utils.js ─── format.js
 - Named exports only - no default exports.
 - Mutable shared state via exported `const` object (`state`); primitives use setter functions (`setChartReady()`).
 - `prefs.js` breaks a near-circular dependency between `notifications.js` and `ws.js`.
+- `conn.js` (imports `state.js` only) is the one writer of the header connection dot and the "Server unreachable" banner. `ws.js` reports the socket state and `api.js` the backend-down flag; `conn.js` derives what to show. It also holds the pure close-classification and reconnect-pacing functions, whose timings, close codes and paths come from the server (`window.__MW_CONN__`, refreshed by every WebSocket `hello`).
+- `utils.js`, `state.js` and `conn.js` touch no DOM at import, so `node --test` loads them directly (`tests/js/`).
 - `modal-loader.js` is a lazy-loading proxy - imports `modal.js` dynamically on first call.
 
 ## Single-source-of-truth principle

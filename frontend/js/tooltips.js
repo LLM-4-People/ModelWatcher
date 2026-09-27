@@ -1,13 +1,30 @@
 // Tooltip system: hover (desktop), long-press (touch), and focus support.
 // Single shared #help-tip div with content from three resolution paths:
 // data-tip-id (registered HTML), data-tip (HELP dict + tier scale), or raw text.
-import { HELP, isRecentTouch, wasTouchMove, isTouchDevice } from './utils.js';
+import { HELP, isTouchDevice, logError, logTag } from './utils.js';
 import { tierScaleHTML } from './format.js';
 
 const _tipHTML = {};
 
 export function registerTip(id, html) { _tipHTML[id] = html; }
 export function clearTips(prefix) { if (!prefix) { Object.keys(_tipHTML).forEach(k => delete _tipHTML[k]); return; } Object.keys(_tipHTML).forEach(k => { if (k.startsWith(prefix)) delete _tipHTML[k]; }); }
+
+// Touch tracking: a mouseover/focus that follows a touch is synthetic and must not open a tooltip
+let _recentTouch = false;
+let _recentTouchTimer = 0;
+let _touchMoved = false;
+const _RECENT_TOUCH_MS = 400;
+
+function _trackTouches() {
+  document.addEventListener('touchstart', () => {
+    _recentTouch = true; _touchMoved = false; clearTimeout(_recentTouchTimer);
+  }, { passive: true });
+  document.addEventListener('touchmove', () => { _touchMoved = true; }, { passive: true });
+  document.addEventListener('touchend', () => {
+    clearTimeout(_recentTouchTimer);
+    _recentTouchTimer = setTimeout(() => { _recentTouch = false; }, _RECENT_TOUCH_MS);
+  }, { passive: true });
+}
 
 let _tip = null;
 let _current = null;
@@ -86,10 +103,12 @@ function copyTipText(el) {
       if (_current) _setContent(_resolveContent(_current));
       else _hide();
     }, 800);
-  }).catch(() => {});
+  }).catch(e => logError(logTag('Tip', '→', 'Error', 'Copy'), e));
 }
 
 export function initTooltips() {
+  _trackTouches();
+  const touch = isTouchDevice();
   _tip = document.createElement('div');
   _tip.id = 'help-tip';
   _tip.setAttribute('aria-hidden', 'true');
@@ -111,7 +130,7 @@ export function initTooltips() {
   let _longPressTarget = null;
   let _longPressFired = false;
 
-  if (isTouchDevice) {
+  if (touch) {
     document.addEventListener('touchstart', e => {
       const el = findTipTarget(e.target);
       if (!el) return;
@@ -139,7 +158,7 @@ export function initTooltips() {
       }
       const el = _longPressTarget;
       _longPressTarget = null;
-      if (wasTouchMove()) return;
+      if (_touchMoved) return;
       if (!el) return;
       if (_current === el) { _hide(); }
     }, { passive: true });
@@ -152,15 +171,15 @@ export function initTooltips() {
     }, { passive: true });
   } else {
     document.addEventListener('touchend', e => {
-      if (wasTouchMove()) return;
+      if (_touchMoved) return;
       const el = findTipTarget(e.target);
       if (el) { _current === el ? _hide() : _show(el, true); }
     }, { passive: true });
   }
 
-  function showIfNotTouch(el) { if (!isRecentTouch() && el) _show(el, false); }
+  function showIfNotTouch(el) { if (!_recentTouch && el) _show(el, false); }
   function hideIfNotPinned(relatedTarget) {
-    if (isRecentTouch() || _shownByTap) return;
+    if (_recentTouch || _shownByTap) return;
     if (_current && !_current.contains(relatedTarget)) _hide();
   }
   document.addEventListener('mouseover', e => showIfNotTouch(findTipTarget(e.target)));
@@ -169,10 +188,10 @@ export function initTooltips() {
   document.addEventListener('focusout', e => hideIfNotPinned(e.relatedTarget));
 
   document.addEventListener('click', e => {
-    if (isTouchDevice && _shownByTap) return;
+    if (touch && _shownByTap) return;
     const el = findTipTarget(e.target);
     if (el) {
-      if (isTouchDevice) return;
+      if (touch) return;
       if (el.dataset.copyTip !== undefined && _current === el) {
         copyTipText(el);
         e.preventDefault();

@@ -7,6 +7,7 @@ All domain modules import from here.
 import asyncio
 import logging
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,8 +22,7 @@ if sys.platform == "win32":
 
 import os as _os
 if _os.environ.get("TZ"):
-    import time as _time
-    _time.tzset()
+    time.tzset()
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -59,17 +59,33 @@ def apply_log_level(level: str):
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-# backend/ → project root (where config/, data/, frontend/ live)
-_BASE_DIR = Path(__file__).resolve().parent.parent
+# Single source for every project path. Scripts and tests import these too,
+# so nothing else recomputes the project root from its own __file__.
+BACKEND_DIR = Path(__file__).resolve().parent
+BASE_DIR = BACKEND_DIR.parent
 
-CONFIG_DIR = _BASE_DIR / "config"
-DATA_DIR = _BASE_DIR / "data"
+CONFIG_DIR = BASE_DIR / "config"
+DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 VAPID_KEY_FILE = DATA_DIR / "vapid_private.pem"
 VAPID_PUB_FILE = DATA_DIR / "vapid_public.txt"
-FRONTEND_DIR = _BASE_DIR / "frontend"
-BUILT_CSS_PATH = Path(_os.environ.get("MW_BUILT_CSS_PATH", "/opt/frontend/tailwind.min.css"))
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+# URL name of the stylesheet `npm run build:css` produces (index.html links it).
+# The default path is that build output; the Dockerfile overrides it (see there).
+BUILT_CSS_NAME = "tailwind.min.css"
+BUILT_CSS_BUILD_CMD = "npm run build:css"
+BUILT_CSS_PATH = Path(_os.environ.get("MW_BUILT_CSS_PATH", FRONTEND_DIR / BUILT_CSS_NAME))
+
+# Answers 200 whenever the process serves requests. The dashboard probes it to tell an
+# unreachable server from a degraded one; /health stays the readiness check (Docker HEALTHCHECK).
+LIVENESS_PATH = "/health/live"
+WS_PATH = "/ws"
+
+# tiktoken reads this when it first loads an encoding; keeping the cache in the
+# persistent data dir means a deployment downloads each encoding only once.
+TIKTOKEN_CACHE_DIR = Path(_os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(DATA_DIR / "tiktoken")))
 
 # ── Runtime config namespace ──────────────────────────────────────────────────
 # Populated by config.reload_config() - no defaults here; app.yaml is the sole source of truth.
@@ -216,6 +232,22 @@ def _task_done(task: asyncio.Task):
         log_error(f"Background task failed: {task.get_name()}", exc)
 
 
+
+# ── Sliding-window rate limiting ─────────────────────────────────────────────
+
+def rate_limited(times: list[float], window_s: float, max_count: int) -> bool:
+    """Return True when max_count events already happened within window_s; otherwise record one.
+
+    The one window implementation behind the HTTP limiters (routes.check_rate_limit)
+    and the per-connection WebSocket sync_prefs limit.
+    """
+    now = time.monotonic()
+    times[:] = [t for t in times if now - t < window_s]
+    if len(times) >= max_count:
+        return True
+    times.append(now)
+    return False
+
 # ── Scheduler state ──────────────────────────────────────────────────────────
 
 scheduler_running: bool = False
@@ -324,12 +356,20 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+MODEL_KEY_SEP = "::"
+
+
+def make_model_key(provider_name: str, model_id: str) -> str:
+    """Join a provider name and model id into a model key (inverse of parse_model_key)."""
+    return f"{provider_name}{MODEL_KEY_SEP}{model_id}"
+
+
 def parse_model_key(model_key: str) -> tuple[str, str]:
     """Split a model key into (provider_name, model_id)."""
-    idx = model_key.find("::")
+    idx = model_key.find(MODEL_KEY_SEP)
     if idx < 0:
         return "", model_key
-    return model_key[:idx], model_key[idx + 2:]
+    return model_key[:idx], model_key[idx + len(MODEL_KEY_SEP):]
 
 
 TEST_HEALTH = "health"
@@ -365,6 +405,14 @@ def test_type_allows_status(test_type: str, status: str | None) -> bool:
 STATUS_VALUES = ("online", "degraded", "error", "unknown")
 TEST_TYPES = (TEST_BENCHMARK, TEST_HEALTH, TEST_AUDIT, TEST_PROBE)
 CHART_VIEWS = ("speed", "consistency", "scores", "health")
+
+# Display names per test type: `full` where there is room, `short` on phones
+TEST_TYPE_LABELS = {
+    TEST_HEALTH: {"full": "Health", "short": "HC"},
+    TEST_BENCHMARK: {"full": "Bench", "short": "BM"},
+    TEST_AUDIT: {"full": "Audit", "short": "AU"},
+    TEST_PROBE: {"full": "Probe", "short": "PR"},
+}
 
 EVENT_LABELS = {
     "offline": "Offline",

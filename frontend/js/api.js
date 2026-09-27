@@ -3,36 +3,27 @@
 // failures trip `_backendDown` to short-circuit further calls.
 import { state, _etags } from './state.js';
 import { logError, logDebug, logWarn, logInfo, logTag } from './utils.js';
-
-const _FAIL_THRESHOLD = 3;
-
-function _updateBackendUI() {
-  const banner = document.getElementById('backend-down-banner');
-  if (banner) banner.classList.toggle('hidden', !state._backendDown);
-  if (state._backendDown) {
-    const dot = document.getElementById('ws-status');
-    if (dot) {
-      dot.className = 'ml-2 inline-block w-2.5 h-2.5 rounded-full bg-danger-400';
-      dot.setAttribute('data-tip', 'ws_down');
-      dot.setAttribute('aria-label', 'down');
-    }
-  }
-}
+import { setBackendDown } from './conn.js';
 
 export function recoverBackend() {
   if (!state._backendDown) return;
-  state._backendDown = false;
   state._apiFailStreak = 0;
   state._suppressDeployReload = true;
-  _updateBackendUI();
+  setBackendDown(false);
+}
+
+// Liveness, not readiness: /health answers 503 whenever tests are disabled or no model is
+// healthy, which says nothing about whether the server is reachable (finding F5).
+export function fetchLive() {
+  return fetch(state.conn.liveness_path, { cache: 'no-store' });
 }
 
 export function probeBackend() {
-  return fetch('/health').then(r => {
-    if (!r.ok) return false;
+  return fetchLive().then(r => {
+    if (!r.ok) { logDebug(logTag('API', '←', 'Probe', `HTTP ${r.status}`)); return false; }
     recoverBackend();
     return true;
-  }).catch(() => false);
+  }).catch(e => { logDebug(logTag('API', '←', 'Probe', 'Unreachable', e?.message)); return false; });
 }
 
 function _onApiResult(ok) {
@@ -42,10 +33,10 @@ function _onApiResult(ok) {
     recoverBackend();
   } else {
     state._apiFailStreak++;
-    if (!state._backendDown && state._apiFailStreak >= _FAIL_THRESHOLD) {
-      state._backendDown = true;
-      logWarn(logTag('API', '←', 'Down', `${_FAIL_THRESHOLD}+ consecutive failures`));
-      _updateBackendUI();
+    const threshold = state.conn.unreachable.after_failures;
+    if (!state._backendDown && state._apiFailStreak >= threshold) {
+      logWarn(logTag('API', '←', 'Down', `${threshold}+ consecutive failures`));
+      setBackendDown(true);
     }
   }
 }

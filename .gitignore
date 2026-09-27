@@ -43,3 +43,6 @@ package-lock.json
 # Generated output from scripts/ (regenerable, not source)
 scripts/**/*_results.json
 scripts/**/*_values.json
+
+# Built by `npm run build:css` (the Docker image builds its own copy)
+frontend/tailwind.min.css

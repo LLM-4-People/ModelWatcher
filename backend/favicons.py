@@ -35,7 +35,8 @@ _MATTE_COLOR = (255, 255, 255)
 _VALID_EXTS = frozenset({".svg", ".png"})
 
 
-def _provider_slug(provider_name: str) -> str:
+def provider_slug(provider_name: str) -> str:
+    """File stem for a provider's cached favicon."""
     return provider_name.replace(" ", "_")
 
 _favicon_task: asyncio.Task | None = None
@@ -315,7 +316,7 @@ async def fetch_provider_favicon(provider_name: str, base_url: str) -> str | Non
 
         content = resp.content
         is_svg = _is_svg(content)
-        slug = _provider_slug(provider_name)
+        slug = provider_slug(provider_name)
 
         for old in FAVICON_DIR.glob(f"{slug}.*"):
             old.unlink(missing_ok=True)
@@ -426,7 +427,7 @@ async def _fetch_provider_title(provider_name: str, base_url: str) -> None:
 
 def provider_logo_path(provider_name: str) -> Path | None:
     """Find the cached favicon file for a provider. Returns Path or None."""
-    slug = provider_name.replace(" ", "_")
+    slug = provider_slug(provider_name)
     for f in FAVICON_DIR.glob(f"{slug}.*"):
         if f.is_file() and f.stat().st_size > 0 and f.suffix in _VALID_EXTS:
             return f

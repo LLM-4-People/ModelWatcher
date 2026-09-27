@@ -120,9 +120,11 @@ The dashboard is available at `http://localhost:8080`.
 |-------|------|---------|
 | `/path/to/ModelWatcher:/app:ro` | read-only | Application code (backend, frontend, etc.). uvicorn `--reload` watches via inotify and works on read-only mounts. |
 | `/path/to/ModelWatcher/config:/app/config:rw` | read-write | Config files. `config.py` strips `reset_epoch: true` from `models.yaml` in-place after processing. |
-| `/path/to/ModelWatcher/data:/app/data:rw` | read-write | SQLite database (`metrics.db` + WAL files), VAPID keys, cached favicons. |
+| `/path/to/ModelWatcher/data:/app/data:rw` | read-write | SQLite database (`metrics.db` + WAL files), VAPID keys, cached favicons, tiktoken encoding cache (`data/tiktoken`). |
 
 The `data/` directory is created automatically if it does not exist.
+
+At startup (unless `MW_DISABLE_TESTS` is set) a background thread downloads the tiktoken encoding (`testing.benchmark.token_encoding`) from `openaipublic.blob.core.windows.net` into `data/tiktoken`; later starts reuse the cached copy. The server starts and serves without that host; while the encoding is unavailable, token counts fall back to chunk counts and the failure is logged (retried every `testing.benchmark.token_encoding_retry`).
 
 ## Environment variables
 
@@ -187,7 +189,8 @@ Set one per provider referenced in `config/models.yaml` via `${VAR_NAME}` syntax
 | `MW_APP_YAML` | Override app config file path |
 | `MW_AUDITS_YAML` | Override audits config file path |
 | `MW_DB_NAME` | Override SQLite database filename (example: `metrics.db`) |
-| `MW_BUILT_CSS_PATH` | Override built CSS path (example: `/opt/frontend/tailwind.min.css`) |
+| `MW_BUILT_CSS_PATH` | Override built CSS path (the Dockerfile sets `/opt/frontend/tailwind.min.css`, outside the read-only `/app` mount) |
+| `TIKTOKEN_CACHE_DIR` | tiktoken encoding cache (default: `data/tiktoken`, inside the persistent data volume) |
 | `TZ` | Timezone (set to `UTC` in the Dockerfile). `tzdata` is installed in the image. |
 
 ## Nginx reverse proxy
@@ -232,6 +235,8 @@ server {
     }
 }
 ```
+
+The WebSocket origin check always accepts pages whose `Origin` host equals the `Host` header the server receives, so keep forwarding `Host`. `$host` drops the port; if the dashboard is published on a non-default port, forward `$http_host` instead, or list the public origin in `websocket.allowed_origins`.
 
 Set `FORWARDED_ALLOW_IPS` to your nginx server's IP (e.g. `127.0.0.1` if nginx is on the same host) so uvicorn trusts the `X-Forwarded-*` headers.
 

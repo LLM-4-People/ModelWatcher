@@ -10,7 +10,7 @@ import math
 import time
 from typing import Any
 
-from backend.state import c, log, normalize_thinking
+from backend.state import c, log, normalize_thinking, parse_model_key
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1125,7 +1125,7 @@ def compute_provider_summaries(
 
         grouped = {}
         for k, entry in model_cache.items():
-            pname = k.split("::")[0]
+            pname = parse_model_key(k)[0]
             if providers and pname not in providers:
                 continue
             if k in _archived_model_keys:
@@ -1255,7 +1255,7 @@ def build_summary_response(providers: list[str] | None = None, detail_providers:
     skip_models = detail_providers is not None and not detail_providers
     provider_accum: dict[str, list[tuple[dict, dict | None]]] = {}
     for k, entry in list(model_cache.items()):
-        pname = k.split("::")[0]
+        pname = parse_model_key(k)[0]
         is_archived = k in _archived_model_keys
         in_provider_filter = not providers or pname in providers
         in_model_filter = not model_filter or pname in model_filter

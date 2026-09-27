@@ -1,10 +1,10 @@
 // Entry point. Uses cache-then-network pattern: IndexedDB cache renders
 // instantly on revisit (Phase 1), then fresh data overwrites (Phase 2).
 // initNotifSystem MUST run before connectWS so prefs load before the WS
-// onopen sync - otherwise the server filters out all notifications.
+// hello sync - otherwise the server filters out all notifications.
 import { state, setMetrics, applyConfig, LS } from './state.js';
 import { logError, logInfo, logTag, reportClientError, stripEphemeral } from './utils.js';
-import { api, probeBackend, fetchProviderMetrics, fetchProviders, fetchModelInfoCapabilities } from './api.js';
+import { api, fetchLive, probeBackend, fetchProviderMetrics, fetchProviders, fetchModelInfoCapabilities } from './api.js';
 import { initTooltips } from './tooltips.js';
 import { _resizeCharts, invalidateBucketCache, _fetchMetaClear } from './chart.js';
 import { renderSchedule, toggleProvider, toggleAllProviders, initScrollObserver, applyProvidersData, modelKeys, buildProviderSections, setScheduleUI, mergeModelInfo } from './dom.js';
@@ -12,7 +12,7 @@ import { openModal, closeModal } from './modal-loader.js';
 import { closeNotifPanel, initNotifSystem, initPush, setCloseHelpPanel, syncNotifSettingsUI } from './notifications.js';
 import { buildNotifPrefs } from './prefs.js';
 import { closeHelpPanel, initHelpPanel, isHelpPanelOpen, setCloseNotifPanel, renderHelpLegends } from './help.js';
-import { connectWS, updateWSStatus, refreshCardBuckets } from './ws.js';
+import { connectWS, refreshCardBuckets } from './ws.js';
 import { initTheme } from './theme.js';
 import { scheduleUI } from './frame.js';
 import { cacheGet, cacheSet } from './cache.js';
@@ -99,9 +99,26 @@ function _measureClientRTT() {
 
 function _measureClientRTTFresh() {
   const t0 = performance.now();
-  fetch(`${location.origin}/health?_rtt=${Date.now()}`, { cache: 'no-store' })
-    .then(r => { if (!r.ok) return; const ms = Math.round(performance.now() - t0); if (ms > 1) state.clientRTT = Math.round(ms / 2); })
-    .catch(() => {});
+  fetchLive()
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); const ms = Math.round(performance.now() - t0); if (ms > 1) state.clientRTT = Math.round(ms / 2); })
+    .catch(e => logError(logTag('App', '←', 'Error', 'RTT'), e));
+}
+
+// While the server looks unreachable, probe liveness every unreachable.retry_interval (read per
+// round, so a config change applies); a timeout chain instead of setInterval for that reason.
+function _probeWhileDown() {
+  setTimeout(() => {
+    if (!state._backendDown) { _probeWhileDown(); return; }
+    probeBackend().then(up => {
+      if (up) {
+        logInfo(logTag('App', '←', 'Recovered', 'Backend up'));
+        connectWS();
+        fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders] }).then(m => { if (m) { setMetrics(m); scheduleUI({ models: Object.keys(m), summary: true, providers: true }); } }).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryMetrics'), e));
+        api('/api/config').then(c => _applyCfg(c)).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryConfig'), e));
+      }
+      _probeWhileDown();
+    });
+  }, state.conn.unreachable.retry_interval * 1000);
 }
 
 
@@ -132,11 +149,10 @@ async function init() {
   setScheduleUI(scheduleUI);
   initTooltips();
   initTheme();
-  updateWSStatus('connecting');
   initNotifSystem();
   connectWS();
 
-  try { state.collapsedProviders = JSON.parse(localStorage.getItem(LS.COLLAPSED) || '[]'); } catch (e) { state.collapsedProviders = []; }
+  try { state.collapsedProviders = JSON.parse(localStorage.getItem(LS.COLLAPSED) || '[]'); } catch (e) { logError(logTag('App', '←', 'Error', 'CollapsedState'), e); state.collapsedProviders = []; }
   localStorage.removeItem('mw_show_archived'); // setting removed; cleanup stale key
 
   // Phase 1: render from cache (instant on revisit)
@@ -254,17 +270,7 @@ async function init() {
     window._pushInitPromise = initPush().catch(e => logError(logTag('Push', '←', 'Error', 'Init'), e));
   });
 
-  setInterval(() => {
-    if (!state._backendDown) return;
-    probeBackend().then(up => {
-      if (!up) return;
-      logInfo(logTag('App', '←', 'Recovered', 'Backend up'));
-      updateWSStatus('connecting');
-      connectWS();
-      fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders] }).then(m => { if (m) { setMetrics(m); scheduleUI({ models: Object.keys(m), summary: true, providers: true }); } }).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryMetrics'), e));
-      api('/api/config').then(c => _applyCfg(c)).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryConfig'), e));
-    });
-  }, 15000);
+  _probeWhileDown();
 
   logInfo(logTag('App', '→', 'Init', 'Complete', `${Object.keys(state.metrics).length} models`));
 }

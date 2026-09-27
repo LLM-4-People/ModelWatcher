@@ -14,9 +14,10 @@ Fixes #(issue number), or "N/A".
 - [ ] Config / deployment
 
 **Testing**
-- [ ] `npm test` passes (89 tests)
+- [ ] `npm test` passes
 - [ ] Backend imports OK (`python3 -c "import backend.main"`)
 - [ ] No browser console errors (if frontend changed)
+- [ ] `npm run test:e2e` passes (if frontend changed)
 - [ ] No new secrets or API keys in source
 
 **Checklist**

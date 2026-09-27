@@ -54,7 +54,7 @@ Example files are provided: `config/app.yaml.example`, `config/models.yaml.examp
 | `debug` | bool | (required) | Enable uvicorn `--reload` (hot-reload backend on file change). Disable in production. |
 | `static_url_prefix` | string | (required) | URL prefix for frontend assets (e.g. `/frontend`). Requires server restart - not hot-reloadable. |
 | `log_level` | string | (required) | Logging verbosity: `"debug"`, `"info"`, `"warning"`, `"error"`. Controls both backend Python logs and browser console output. |
-| `site_url` | string | (required) | Public URL of the dashboard - used in CSP `base-uri`, webhook payloads, WS allowed origins. |
+| `site_url` | string | (required) | Public URL of the dashboard - used in CSP `base-uri`, webhook payloads, and as the example's extra WebSocket origin (`websocket.allowed_origins`). |
 | `vapid_email` | string | (required) | VAPID subject claim for web push (`mailto:` or `https:` URL). |
 
 ```yaml
@@ -97,6 +97,8 @@ app:
 | `min_tokens` | int | (required) | Minimum tokens for a valid benchmark result (checked against `completion_tokens`). |
 | `min_chunks` | int | (required) | Minimum streaming chunks for a valid benchmark result (independent of `min_tokens`). |
 | `anthropic_thinking_budget` | int\|null | (required) | Anthropic-specific `budget_tokens` for extended thinking. `null` disables Anthropic extended thinking (param omitted). |
+| `token_encoding` | string | (required) | tiktoken encoding used to count streamed tokens (for example `o200k_base`). Cross-validates provider-reported `completion_tokens` and normalizes ITL when a provider batches several tokens per chunk. Loaded on a background thread on first use and cached under `data/tiktoken` (see `TIKTOKEN_CACHE_DIR`); until it is available, token counts fall back to chunk counts. |
+| `token_encoding_retry` | duration | (required) | How long to wait before retrying a failed `token_encoding` load (for example `1h`). Each failed attempt is logged once. |
 | `prompts.suffix` | string | (required) | Suffix appended to every random prompt - drives output length for TPS/TTFT measurement. |
 
 #### `testing.health_check` - lightweight health checks
@@ -155,9 +157,19 @@ Archived models stop being tested but remain visible in the UI. Per-model or per
 
 ### `websocket` - webSocket settings
 
+Everything under `reconnect` and `unreachable`, plus `stale_after`, is the browser's connection policy: the server sends it in the page bootstrap (`window.__MW_CONN__`) and again in the `hello` frame of every accepted socket, so a hot reload reaches open pages on their next connect.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `allowed_origins` | list[string] | (required) | Empty list = all origins allowed (not recommended for production). Protocol-level ping/pong is configured via uvicorn CLI flags. |
+| `allowed_origins` | list[string] | (required) | Extra origins allowed to open the socket. A page served by this server (its `Origin` host equals the `Host` header) is always accepted, so local, LAN and reverse-proxied access need no entry. Empty list = every origin accepted (not recommended for production). Rejected origins are closed with code 1008. |
+| `heartbeat_interval` | number | (required) | Seconds between server `heartbeat` frames. Runs even with `MW_DISABLE_TESTS`, so a server with nothing to report still looks alive. Protocol-level ping/pong (the server dropping dead clients) is set by the uvicorn flags `--ws-ping-interval`/`--ws-ping-timeout` instead. |
+| `stale_after` | number | (required) | Seconds without any frame after which the page closes the socket (code 4000) and reconnects. Must exceed `heartbeat_interval`; two to three heartbeats is a sensible window. |
+| `reconnect.min_delay` | number | (required) | First reconnect delay in seconds. It doubles for every attempt that never received a `hello`, and resets on the next `hello`. |
+| `reconnect.max_delay` | number | (required) | Reconnect delay cap in seconds; also the pace of retries after an origin rejection (1008). Must be >= `min_delay`. |
+| `unreachable.after_failures` | int | (required) | Consecutive failed requests (HTTP errors, or sockets that fail before their `hello`) after which the page shows "Server unreachable". Server-sent closes do not count: they prove the server is up. |
+| `unreachable.retry_interval` | number | (required) | While unreachable, seconds between liveness probes (`GET /health/live`) and the minimum socket reconnect delay. |
+| `max_message_bytes` | int | (required) | Largest client message accepted; bigger ones close the connection with code 1009. |
+| `sync_prefs_per_minute` | int | (required) | Notification-prefs syncs accepted per minute per connection; extra ones are ignored and logged. |
 
 ### `notifications` - notification system
 
@@ -453,13 +465,16 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 ### Config file path overrides
 
+`MW_MODELS_YAML`, `MW_APP_YAML` and `MW_AUDITS_YAML` take a file name inside `config/`, and `MW_DB_NAME` one inside `data/`; any of them may also be an absolute path, which is how the tests and the browser-test harness run a server on files in a temp dir.
+
 | Variable | Description |
 |----------|-------------|
 | `MW_MODELS_YAML` | Override models config file path |
 | `MW_APP_YAML` | Override app config file path |
 | `MW_AUDITS_YAML` | Override audits config file path |
 | `MW_DB_NAME` | Override SQLite database filename (default: `metrics.db`) |
-| `MW_BUILT_CSS_PATH` | Override built CSS path (default: `/opt/frontend/tailwind.min.css`) |
+| `MW_BUILT_CSS_PATH` | Override built CSS path (default: `frontend/tailwind.min.css`, the `npm run build:css` output; the Docker image sets `/opt/frontend/tailwind.min.css`) |
+| `TIKTOKEN_CACHE_DIR` | Where tiktoken caches downloaded encodings (default: `data/tiktoken`, so a deployment downloads each encoding once) |
 
 ### Server bind
 
@@ -473,7 +488,7 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 | Variable | Description |
 |----------|-------------|
-| `MW_DISABLE_TESTS` | Set to skip scheduler, model_info, favicons, config_watcher, and BroadcastBatcher tasks (for running diagnostics without triggering tests) |
+| `MW_DISABLE_TESTS` | Set to skip the test-driven background work: token encoder load, scheduler, BroadcastBatcher, config watcher, favicon and model-info fetches (for running diagnostics without triggering tests). Startup logs the skipped list. The WebSocket heartbeat keeps running. |
 
 | Variable | Description |
 |----------|-------------|

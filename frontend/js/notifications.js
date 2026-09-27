@@ -2,7 +2,7 @@
 // are the single enforcement point; client-side handleNotification applies
 // partial defense-in-depth (master toggle + popups + recovery grounding).
 import { state, _NOTIF_OPTS, LS } from './state.js';
-import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, parseModelKey, initSheetDrag, BP_SM, setText, setHTML, collapsibleHTML, toggleCollapsible } from './utils.js';
+import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, parseModelKey, initSheetDrag, BP_SM, setText, setHTML, collapsibleHTML, toggleCollapsible, STATUS_GLYPH } from './utils.js';
 import { TIER_TEXT, TIER_BG, timeAgo } from './format.js';
 import { api } from './api.js';
 import { cacheGet, cacheSet } from './cache.js';
@@ -238,7 +238,7 @@ function _notifSeverity(evt, action) {
 function _notifIconInfo(evt, action) {
   const sev = _notifSeverity(evt, action);
   return {
-    icon: sev === 'added' ? '+' : sev === 'removed' ? '−' : sev === 'recovered' ? '✓' : sev === 'degraded' ? '⚠' : '✕',
+    icon: sev === 'added' ? '+' : sev === 'removed' ? '−' : sev === 'recovered' ? STATUS_GLYPH.ok : sev === 'degraded' ? STATUS_GLYPH.degraded : STATUS_GLYPH.failed,
     className: evt,
     severity: sev,
   };

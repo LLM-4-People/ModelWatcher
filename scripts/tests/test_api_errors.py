@@ -9,6 +9,8 @@ import urllib.error
 
 import pytest
 
+from backend.state import BACKEND_DIR
+
 BASE = "https://stats.ai4fun.dev"
 
 
@@ -69,8 +71,7 @@ def test_422_bad_float():
 
 def test_no_bare_dict_returns_in_push_handlers():
     """push_routes.py should not return bare dicts (should use orjson_response)."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "backend" / "push_routes.py"
+    src = BACKEND_DIR / "push_routes.py"
     text = src.read_text()
     assert 'return {"ok": True}' not in text, "push_routes.py should use orjson_response, not bare dict returns"
     assert 'return {"ok": True,' not in text, "push_routes.py should use orjson_response, not bare dict returns"
@@ -78,16 +79,14 @@ def test_no_bare_dict_returns_in_push_handlers():
 
 def test_error_response_helper_exists():
     """routes.py defines error_response() helper."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "backend" / "routes.py"
+    src = BACKEND_DIR / "routes.py"
     text = src.read_text()
     assert "def error_response(" in text
 
 
 def test_no_raw_jsonresponse_error_in_handlers():
     """No JSONResponse({"error":...}) outside error_response definition."""
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parents[2] / "backend" / "push_routes.py"
+    src = BACKEND_DIR / "push_routes.py"
     for i, line in enumerate(src.read_text().splitlines(), 1):
         if 'JSONResponse({"error"' in line:
             pytest.fail(f"push_routes.py:{i} uses raw JSONResponse error instead of error_response()")

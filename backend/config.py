@@ -11,7 +11,7 @@ import yaml
 from backend.state import (
     c, app_cfg, models_cfg, model_registry, model_cache, log, log_error,
     apply_log_level,
-    CONFIG_DIR, awatch, Change, ensure_scheme,
+    CONFIG_DIR, awatch, Change, ensure_scheme, make_model_key,
 )
 from backend.models import build_model_registry
 from backend.websocket import ws_mgr
@@ -109,6 +109,19 @@ def _validate_int(path: str, value, *, min_value: int | None = None, prefix: str
         raise ValueError(f"{prefix} {path} must be >= {min_value} (got {value})")
 
 
+def _validate_duration(path: str, value, *, prefix: str = "app.yaml:") -> int:
+    """Validate a positive duration (e.g. 30m, 2d) and return it in seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{prefix} {path} must be a duration, not a boolean")
+    try:
+        seconds = _parse_duration(value)
+    except ValueError as e:
+        raise ValueError(f"{prefix} {path} is invalid: {e}") from e
+    if seconds <= 0:
+        raise ValueError(f"{prefix} {path} must be > 0 seconds")
+    return seconds
+
+
 def _validate_string_list(path: str, value, *, min_len: int = 0, prefix: str = "app.yaml:"):
     if not isinstance(value, list):
         raise ValueError(f"{prefix} {path} must be a list")
@@ -163,7 +176,8 @@ def _validate_config(cfg: dict):
 
     bench = testing["benchmark"]
     _validate_mapping("testing.benchmark", bench)
-    for key in ("interval", "target_total_tokens", "min_tokens", "min_chunks", "stagger", "prompts"):
+    for key in ("interval", "target_total_tokens", "min_tokens", "min_chunks", "stagger", "prompts",
+                "token_encoding", "token_encoding_retry"):
         if key not in bench:
             raise ValueError(f"app.yaml: testing.benchmark.{key} is required")
     _validate_int("testing.benchmark.interval", bench["interval"], min_value=60)
@@ -171,6 +185,8 @@ def _validate_config(cfg: dict):
     _validate_int("testing.benchmark.min_tokens", bench["min_tokens"], min_value=0)
     _validate_int("testing.benchmark.min_chunks", bench["min_chunks"], min_value=0)
     _validate_bool("testing.benchmark.stagger", bench["stagger"])
+    _validate_string("testing.benchmark.token_encoding", bench["token_encoding"])
+    _validate_duration("testing.benchmark.token_encoding_retry", bench["token_encoding_retry"])
     thinking_budget = bench.get("anthropic_thinking_budget")
     if thinking_budget is not None:
         _validate_int("testing.benchmark.anthropic_thinking_budget", thinking_budget, min_value=0)
@@ -223,14 +239,7 @@ def _validate_config(cfg: dict):
     _validate_int("metrics.cleanup_interval", metrics["cleanup_interval"], min_value=60)
     _validate_number("metrics.write_batch_interval", metrics["write_batch_interval"], min_value=0.1)
     _validate_int("metrics.write_batch_max_buffer", metrics["write_batch_max_buffer"], min_value=1)
-    if isinstance(metrics["recent_history"], bool):
-        raise ValueError("app.yaml: metrics.recent_history must be a duration, not a boolean")
-    try:
-        recent_history_seconds = _parse_duration(metrics["recent_history"])
-    except ValueError as e:
-        raise ValueError(f"app.yaml: metrics.recent_history is invalid: {e}") from e
-    if recent_history_seconds <= 0:
-        raise ValueError("app.yaml: metrics.recent_history must be > 0 seconds")
+    _validate_duration("metrics.recent_history", metrics["recent_history"])
 
     stalls = cfg["stalls"]
     for key in ("visible_threshold_ms", "hiccup_threshold_ms", "hiccup_multiplier", "batching_log_threshold"):
@@ -244,14 +253,7 @@ def _validate_config(cfg: dict):
         if key not in aa:
             raise ValueError(f"app.yaml: auto_archive.{key} is required")
     _validate_bool("auto_archive.enabled", aa["enabled"])
-    if isinstance(aa["offline_duration"], bool):
-        raise ValueError("app.yaml: auto_archive.offline_duration must be a duration, not a boolean")
-    try:
-        aa_seconds = _parse_duration(aa["offline_duration"])
-    except ValueError as e:
-        raise ValueError(f"app.yaml: auto_archive.offline_duration is invalid: {e}") from e
-    if aa_seconds <= 0:
-        raise ValueError("app.yaml: auto_archive.offline_duration must be > 0 seconds")
+    _validate_duration("auto_archive.offline_duration", aa["offline_duration"])
 
     server = cfg["server"]
     for key in ("max_connections", "http_connect_timeout", "http_pool_max"):
@@ -262,9 +264,31 @@ def _validate_config(cfg: dict):
     _validate_int("server.http_pool_max", server["http_pool_max"], min_value=1)
 
     ws = cfg["websocket"]
-    if "allowed_origins" not in ws:
-        raise ValueError("app.yaml: websocket.allowed_origins is required")
+    for key in ("allowed_origins", "heartbeat_interval", "stale_after", "reconnect", "unreachable",
+                "max_message_bytes", "sync_prefs_per_minute"):
+        if key not in ws:
+            raise ValueError(f"app.yaml: websocket.{key} is required")
     _validate_string_list("websocket.allowed_origins", ws["allowed_origins"])
+    _validate_number("websocket.heartbeat_interval", ws["heartbeat_interval"], min_value=0, inclusive=False)
+    # Clients count silence from their last message; a window no longer than the heartbeat
+    # interval would tear down healthy sockets on a quiet server
+    _validate_number("websocket.stale_after", ws["stale_after"], min_value=ws["heartbeat_interval"], inclusive=False)
+    reconnect = ws["reconnect"]
+    _validate_mapping("websocket.reconnect", reconnect)
+    for key in ("min_delay", "max_delay"):
+        if key not in reconnect:
+            raise ValueError(f"app.yaml: websocket.reconnect.{key} is required")
+    _validate_number("websocket.reconnect.min_delay", reconnect["min_delay"], min_value=0, inclusive=False)
+    _validate_number("websocket.reconnect.max_delay", reconnect["max_delay"], min_value=reconnect["min_delay"])
+    unreachable = ws["unreachable"]
+    _validate_mapping("websocket.unreachable", unreachable)
+    for key in ("after_failures", "retry_interval"):
+        if key not in unreachable:
+            raise ValueError(f"app.yaml: websocket.unreachable.{key} is required")
+    _validate_int("websocket.unreachable.after_failures", unreachable["after_failures"], min_value=1)
+    _validate_number("websocket.unreachable.retry_interval", unreachable["retry_interval"], min_value=0, inclusive=False)
+    _validate_int("websocket.max_message_bytes", ws["max_message_bytes"], min_value=1)
+    _validate_int("websocket.sync_prefs_per_minute", ws["sync_prefs_per_minute"], min_value=1)
 
     notif = cfg["notifications"]
     for key in ("enabled", "webhook_timeout", "push_ttl", "events", "in_app", "rate_limits"):
@@ -499,10 +523,10 @@ def reload_config(log_changes: bool = False) -> dict:
         p_name = provider["name"]
         if provider.pop("reset_epoch", None) is True:
             for m in provider["models"]:
-                reset_keys.add(f"{p_name}::{m['id']}")
+                reset_keys.add(make_model_key(p_name, m["id"]))
         for m in provider["models"]:
             if m.pop("reset_epoch", None) is True:
-                reset_keys.add(f"{p_name}::{m['id']}")
+                reset_keys.add(make_model_key(p_name, m["id"]))
 
     # Snapshot current values for change detection
     old_c = {k: v for k, v in c.__dict__.items() if not k.startswith("_")} if log_changes else None
@@ -577,6 +601,8 @@ def reload_config(log_changes: bool = False) -> dict:
     c.anthropic_thinking_budget = benchmark.get("anthropic_thinking_budget")
     c.benchmark_prompt_suffix = benchmark["prompts"]["suffix"]
     c.benchmark_stagger = benchmark["stagger"]
+    c.benchmark_token_encoding = benchmark["token_encoding"]
+    c.benchmark_token_encoding_retry = _parse_duration(benchmark["token_encoding_retry"])
 
     # Health check settings
     c.health_enabled = health["enabled"]
@@ -638,6 +664,12 @@ def reload_config(log_changes: bool = False) -> dict:
     c.http_pool_max = server["http_pool_max"]
 
     c.allowed_ws_origins = set(ws["allowed_origins"])
+    c.ws_heartbeat_interval = ws["heartbeat_interval"]
+    c.ws_stale_after = ws["stale_after"]
+    c.ws_reconnect = dict(ws["reconnect"])
+    c.ws_unreachable = dict(ws["unreachable"])
+    c.ws_max_message_bytes = ws["max_message_bytes"]
+    c.ws_sync_prefs_per_minute = ws["sync_prefs_per_minute"]
 
     notif = new_app_cfg["notifications"]
     c.notif_enabled = notif["enabled"]

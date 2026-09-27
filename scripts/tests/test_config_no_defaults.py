@@ -4,15 +4,14 @@ Catches bug family #1: getattr(c, "field", default) in stats.py hid drifted
 values (reliability weights 0.5/0.5 vs config 0.75/0.25).
 """
 import ast
-import pathlib
 
 import pytest
 
-BACKEND = pathlib.Path(__file__).resolve().parents[2] / "backend"
+from backend.state import BACKEND_DIR
 
 
 def _python_files():
-    return list(BACKEND.glob("*.py"))
+    return list(BACKEND_DIR.glob("*.py"))
 
 
 def test_no_getattr_with_non_none_default():
@@ -41,14 +40,14 @@ def test_no_getattr_with_non_none_default():
 
 def test_no_default_weight_dicts():
     """No _DEFAULT_*_WEIGHTS dicts in stats.py."""
-    src = (BACKEND / "stats.py").read_text()
+    src = (BACKEND_DIR / "stats.py").read_text()
     assert "_DEFAULT_CONSISTENCY_WEIGHTS" not in src, "_DEFAULT_CONSISTENCY_WEIGHTS should be deleted"
     assert "_DEFAULT_SPEED_WEIGHTS" not in src, "_DEFAULT_SPEED_WEIGHTS should be deleted"
 
 
 def test_stats_uses_direct_access():
     """stats.py accesses config via c.field, not getattr fallbacks."""
-    src = (BACKEND / "stats.py").read_text()
+    src = (BACKEND_DIR / "stats.py").read_text()
     assert "getattr(c," not in src, "stats.py should not use getattr(c, ...)"
     assert "c.scores_consistency_weights" in src
     assert "c.scores_speed_weights" in src
@@ -60,7 +59,7 @@ def test_stats_uses_direct_access():
 
 def test_config_validates_all_rate_limits():
     """config.py validates all 5 rate-limit keys."""
-    src = (BACKEND / "config.py").read_text()
+    src = (BACKEND_DIR / "config.py").read_text()
     for key in ("prefs_per_minute", "push_test_per_minute",
                 "subscribe_per_minute", "validate_per_minute",
                 "client_error_per_minute"):
@@ -69,7 +68,7 @@ def test_config_validates_all_rate_limits():
 
 def test_config_loads_all_rate_limits():
     """config.py assigns all 5 rate-limit fields to c."""
-    src = (BACKEND / "config.py").read_text()
+    src = (BACKEND_DIR / "config.py").read_text()
     for field in ("notif_rate_limit_prefs", "notif_rate_limit_push_test",
                   "notif_rate_limit_subscribe", "notif_rate_limit_validate",
                   "notif_rate_limit_client_error"):

@@ -40,7 +40,10 @@ WORKDIR /app
 COPY backend/ backend/
 COPY config/ config/
 COPY frontend/ frontend/
-COPY --from=css-builder /tmp/frontend/tailwind.min.css /opt/frontend/tailwind.min.css
+# Built CSS lives outside /app because compose mounts the repo read-only over /app,
+# which would hide a file built into /app/frontend. backend/state.py reads this path.
+ENV MW_BUILT_CSS_PATH=/opt/frontend/tailwind.min.css
+COPY --from=css-builder /tmp/frontend/tailwind.min.css ${MW_BUILT_CSS_PATH}
 
 # Copy example configs (actual config/*.yaml are gitignored - mounted at runtime)
 COPY config/*.example config/

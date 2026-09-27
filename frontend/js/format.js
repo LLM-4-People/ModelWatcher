@@ -2,7 +2,7 @@
 // here: tier colors (explicit class maps for Tailwind v4 scanning), formatted
 // HTML with styled unit spans, freshness tiers, and score/trend display.
 import { state } from './state.js';
-import { esc } from './utils.js';
+import { esc, SEP_TEXT } from './utils.js';
 
 const TIER_KEYS = ['accent-400', 'success-400', 'warn-400', 'danger-400', 'danger-700', 'teal-400'];
 
@@ -58,6 +58,11 @@ function freshnessTier(ageSeconds, intervalSeconds) {
   if (ratio <= 1.5) return 0;
   if (ratio <= 3.0) return 1;
   return 2;
+}
+
+// Test type display names from /api/config (backend/state.py TEST_TYPE_LABELS); empty until config arrives
+export function testTypeLabel(type, form = 'full') {
+  return state.testTypeLabels[type]?.[form] ?? '';
 }
 
 export function freshnessTextCls(ageSeconds, intervalSeconds) {
@@ -191,7 +196,7 @@ export function moeDetail(e) {
   const parts = [e.num_experts + ' routed'];
   if (e.num_shared_experts) parts.push(e.num_shared_experts + ' shared');
   if (e.num_experts_per_tok) parts.push(e.num_experts_per_tok + '/tok');
-  return parts.join(' · ');
+  return parts.join(SEP_TEXT);
 }
 
 export function fmtContext(n) {

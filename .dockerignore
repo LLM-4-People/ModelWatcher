@@ -10,5 +10,7 @@ __pycache__/
 data/
 .venv/
 node_modules/
+# The image builds its own stylesheet in the css-builder stage; never ship a local build
+frontend/tailwind.min.css
 tests/
 scripts/

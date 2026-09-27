@@ -35,8 +35,12 @@
   .fade-in-once { animation: fade-in .3s ease-out forwards; }
   @keyframes border-angle { to { --border-angle: 360deg } }
   @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .ws-dot-pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
-  .ws-dot-connecting { background-color: var(--color-accent-400); animation: pulse-dot 1.5s ease-in-out infinite; }
+  /* Header connection dot: conn.js sets data-state (one per CONN_STATES entry), the look lives here */
+  #ws-status[data-state="connecting"] { background-color: var(--color-accent-400); animation: pulse-dot 1.5s ease-in-out infinite; }
+  #ws-status[data-state="connected"] { background-color: var(--color-success-400); }
+  #ws-status[data-state="restarting"] { background-color: var(--color-warn-400); animation: pulse-dot 1.5s ease-in-out infinite; }
+  #ws-status[data-state="busy"], #ws-status[data-state="rejected"] { background-color: var(--color-warn-400); }
+  #ws-status[data-state="disconnected"], #ws-status[data-state="down"] { background-color: var(--color-danger-400); }
   @property --border-angle { syntax:'<angle>'; initial-value:0deg; inherits:false; }
   .testing-pulse { position: relative; }
   .testing-pulse::after { content:''; position:absolute; inset:-2px; padding:2px; border-radius:0.75rem; background:conic-gradient(from var(--border-angle),transparent 50%,var(--glow-testing) 75%,var(--color-status-testing) 85%,transparent 100%); -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); -webkit-mask-composite:xor; mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite:exclude; box-shadow:0 0 14px 1px var(--glow-testing-outer); --border-angle:0deg; animation:border-angle 2s linear infinite; pointer-events:none; z-index:1; }
@@ -55,17 +59,21 @@
   .testing-dots span:nth-child(2) { animation-delay: .1s; }
   .testing-dots span:nth-child(3) { animation-delay: .2s; }
   @keyframes dot-bounce { 0%,80%,100% { opacity:.3; transform:scale(.8); } 40% { opacity:1; transform:scale(1); } }
+  /* Segment rows (utils.js segmentsHTML): spacing comes only from the list gap, separators carry no margins.
+     Defined before the components that extend .seg-list so their own display/alignment rules win. */
+  :root { --seg-gap: 4px; }
+  .seg-list { display: inline-flex; align-items: baseline; gap: var(--seg-gap); }
+  .seg-sep { color: var(--color-text-faint); }
+  .seg-rule { width: 1px; align-self: stretch; background: var(--color-border-default); }
   .score-group { display: none; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--color-border-default); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
   @media (min-width: 640px) { .score-group { display: inline-flex; } }
-  .provider-score-sep { display: none; width: 1px; height: 14px; background: var(--color-border-default); flex-shrink: 0; }
-  @media (min-width: 640px) { .provider-score-sep { display: inline-block; } }
+  @media (max-width: 639px) { .score-group + .seg-rule { display: none; } }
   .badge-chip { display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--color-border-default); font-size: 11px; font-weight: 500; white-space: nowrap; }
   .badge-archived { border-color: var(--color-surface-400); }
-  .test-line { gap: 4px; font-variant-numeric: tabular-nums; }
+  .test-line { gap: var(--seg-gap); font-variant-numeric: tabular-nums; }
   .chk-label-short { display: none; }
   @media (max-width: 639px) { .chk-label-full { display: none; } .chk-label-short { display: inline; } }
-  @media (max-width: 639px) { .badge-caps { font-size: 9px; padding: 2px 6px; } .test-line { font-size: 9px; padding: 2px 6px; gap: 3px; } .last-ok { display: none; } }
-  .score-sep { width: 1px; align-self: stretch; margin: 2px 1px; background: var(--color-border-default); }
+  @media (max-width: 639px) { .badge-caps { font-size: 9px; padding: 2px 6px; } .test-line { font-size: 9px; padding: 2px 6px; --seg-gap: 3px; } .last-ok { display: none; } }
   .score-trend { display: inline-block; min-width: 0.7em; font-size: 11px; margin-left: 1px; text-align: center; }
   .score-trend:not(.text-text-muted) { animation: trend-breathe 1.8s ease-in-out infinite; }
   @keyframes trend-breathe { 0%, 100% { opacity: 1; transform: translateY(0); } 40% { opacity: 0.6; transform: translateY(-1px); } 60% { opacity: 0.6; transform: translateY(1px); } }
@@ -857,9 +865,9 @@
       <div class="flex items-center gap-3">
         <img src="__STATIC_PREFIX__/icon-48.png" alt="__APP_NAME__" class="app-logo w-8 h-8 rounded-lg" width="32" height="32">
         <h1 class="text-lg font-semibold tracking-tight">__APP_NAME__</h1>
-        <span id="ws-status" class="ml-2 inline-block w-2.5 h-2.5 rounded-full bg-warn-400" role="status" data-tip="ws_connecting" tabindex="0" aria-label="connecting"></span>
+        <span id="ws-status" class="ml-2 inline-block w-2.5 h-2.5 rounded-full" data-state="connecting" role="status" data-tip="ws_connecting" tabindex="0" aria-label="connecting"></span>
       </div>
-      <span id="schedule-info" class="inline-flex items-center gap-1 text-xs text-text-muted mt-0.5"></span>
+      <span id="schedule-info" class="text-xs text-text-muted mt-0.5"></span>
     </div>
     <div class="flex items-center gap-3">
       <span id="config-warning" class="text-xs text-warn-400 hidden sm:inline"></span>
@@ -885,7 +893,7 @@
   </div>
 </header>
 
-<div id="backend-down-banner" class="hidden bg-danger-700/20 border-b border-danger-700 text-danger-400 text-center text-xs py-2">Server unreachable - retrying automatically</div>
+<div id="backend-down-banner" hidden class="bg-danger-700/20 border-b border-danger-700 text-danger-400 text-center text-xs py-2">Server unreachable - retrying automatically</div>
 
 <main class="w-full px-0 sm:px-6 pr-1.5 pb-2 pt-2">
 

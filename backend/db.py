@@ -532,11 +532,16 @@ class _ReadConn:
 
 def insert_result(model_key: str, record: dict):
     """Insert a test result row. Must be called from thread executor."""
+    insert_results([(model_key, record)])
+
+
+def insert_results(records: list[tuple[str, dict]]):
+    """Insert (model_key, record) rows in one executemany. Must be called from thread executor."""
     if _write_conn is None:
-        log.error("insert_result: DB write connection is None - result DROPPED for %s", model_key)
+        log.error("insert_results: DB write connection is None - %d result(s) DROPPED", len(records))
         return
     with _write_lock:
-        _write_conn.execute(_INSERT_SQL, _record_to_row(model_key, record))
+        _write_conn.executemany(_INSERT_SQL, [_record_to_row(mk, rec) for mk, rec in records])
 
 
 def upsert_model_state(model_key: str, state_kwargs: dict):
@@ -1210,7 +1215,7 @@ def update_model_info(model_key: str, info: dict, overwrite: bool = False):
     if not filtered:
         return
     provider = info.get("provider", "")
-    model_id = info.get("model_id", model_key.split("::", 1)[-1] if "::" in model_key else model_key)
+    model_id = info.get("model_id", parse_model_key(model_key)[1])
     display_name = info.get("display_name", model_id)
     with _write_lock:
         sets = []

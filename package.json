@@ -4,7 +4,9 @@
   "scripts": {
     "build:css": "npx @tailwindcss/cli -i frontend/input.css -o frontend/tailwind.min.css --minify",
     "watch:css": "npx @tailwindcss/cli -i frontend/input.css -o frontend/tailwind.min.css --minify --watch",
-    "test": "python3 -m pytest scripts/tests/ -v",
+    "test": "python3 -m pytest scripts/tests/ -v && npm run test:js",
+    "test:js": "node --test 'tests/js/*.test.mjs'",
+    "test:e2e": "npm run build:css && node --test --test-concurrency=1 'tests/e2e/*.test.mjs'",
     "perf": "node tests/perf-test.mjs",
     "perf:quick": "node tests/perf-test.mjs --quick",
     "perf:har": "node tests/perf-test.mjs --har",

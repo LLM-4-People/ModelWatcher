@@ -2,15 +2,16 @@
 
 Two provider paths: Anthropic (x-api-key, /messages, content_block events) and
 OpenAI-compatible (Bearer auth, /chat/completions, choices[0].delta). Detection
-is based on "anthropic" in the API URL. Token counting uses tiktoken (o200k_base)
-to cross-validate provider-reported completion_tokens, which are frequently
-unreliable. ITL metrics divide per-chunk gaps by per-chunk token counts to
-normalize for provider batching.
+is based on "anthropic" in the API URL. Token counting uses tiktoken (encoding
+from testing.benchmark.token_encoding) to cross-validate provider-reported
+completion_tokens, which are frequently unreliable. ITL metrics divide
+per-chunk gaps by per-chunk token counts to normalize for provider batching.
 """
 
 import asyncio
 import json
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -18,16 +19,68 @@ from dataclasses import dataclass, field
 import httpx
 import tiktoken
 
-from backend.state import c, log, THINK_END, TEST_HEALTH, TEST_BENCHMARK, update_provider_rtt, get_provider_jitter
+from backend.state import (
+    c, log, log_error, THINK_END, TEST_HEALTH, TEST_BENCHMARK, update_provider_rtt, get_provider_jitter, make_model_key,
+)
 import backend.state as st
 from backend.security import scrub_pii, format_api_error, extract_stream_error, safe_internal_error, is_internal_error
 from backend.stats import compute_stall_metrics, empty_stall_metrics, compute_consistency_score, compute_speed_score, percentile
 
-_enc = tiktoken.get_encoding("o200k_base")
+# ── Token encoder ────────────────────────────────────────────────────────────
+# tiktoken downloads an encoding on first load (requests.get without a timeout)
+# and caches it under TIKTOKEN_CACHE_DIR (see state.py). Loading runs on a daemon
+# thread so a slow or blocked download can never stall startup or the event loop;
+# until it succeeds, _validate_token_counts uses its chunk-count fallbacks.
+
+_encoders: dict[str, tiktoken.Encoding] = {}
+_encoder_loading: set[str] = set()
+_encoder_last_attempt: dict[str, float] = {}
+_encoder_lock = threading.Lock()
 
 
-def _count_tokens(text: str) -> int:
-    return len(_enc.encode_ordinary(text))
+def load_encoder(name: str) -> tiktoken.Encoding | None:
+    """Blocking load of a tiktoken encoding; logs and returns None on failure."""
+    try:
+        enc = tiktoken.get_encoding(name)
+        _encoders[name] = enc
+    except Exception as e:
+        log_error(
+            f"Token encoding {name!r} unavailable (cache {st.TIKTOKEN_CACHE_DIR}) - token counts "
+            f"fall back to chunk counts, retrying in {c.benchmark_token_encoding_retry}s", e,
+        )
+        return None
+    finally:
+        with _encoder_lock:
+            _encoder_loading.discard(name)
+    log.info("Token encoding %r loaded (cache %s)", name, st.TIKTOKEN_CACHE_DIR)
+    return enc
+
+
+def get_encoder() -> tiktoken.Encoding | None:
+    """Return the configured encoder, or None while it is loading or unavailable.
+
+    Never blocks: a missing encoder starts one background load, repeated at most
+    every testing.benchmark.token_encoding_retry seconds after a failure.
+    """
+    name = c.benchmark_token_encoding
+    enc = _encoders.get(name)
+    if enc is not None:
+        return enc
+    now = time.monotonic()
+    with _encoder_lock:
+        if name in _encoder_loading:
+            return None
+        last = _encoder_last_attempt.get(name)
+        if last is not None and now - last < c.benchmark_token_encoding_retry:
+            return None
+        _encoder_loading.add(name)
+        _encoder_last_attempt[name] = now
+    threading.Thread(target=load_encoder, args=(name,), name=f"token-encoder-{name}", daemon=True).start()
+    return None
+
+
+def _count_tokens(enc: tiktoken.Encoding, texts: list[str]) -> list[int]:
+    return [len(enc.encode_ordinary(t)) for t in texts]
 
 
 # ── SSE event iterator ───────────────────────────────────────────────────────
@@ -519,10 +572,12 @@ def _validate_token_counts(
         completion_tokens = None
 
     # extract_completion_tokens guarantees >0 for non-None values, so no <=0 check needed here.
-    per_chunk_tokens = [_count_tokens(t) for t in tokens] if tokens else []
-    tiktoken_total = sum(per_chunk_tokens) if per_chunk_tokens else 0
-    answer_token_estimate = sum(_count_tokens(t) for t in answer_texts) if answer_texts is not None else answer_token_count
-    reasoning_token_estimate = sum(_count_tokens(t) for t in reasoning_texts) if reasoning_texts is not None else reasoning_token_count_observed
+    # Without an encoder, per-chunk counts stay empty and the estimates use observed chunk counts.
+    enc = get_encoder()
+    per_chunk_tokens = _count_tokens(enc, tokens) if enc else []
+    tiktoken_total = sum(per_chunk_tokens)
+    answer_token_estimate = sum(_count_tokens(enc, answer_texts)) if enc and answer_texts is not None else answer_token_count
+    reasoning_token_estimate = sum(_count_tokens(enc, reasoning_texts)) if enc and reasoning_texts is not None else reasoning_token_count_observed
 
     avg_tok_per_chunk = tiktoken_total / chunk_count if tiktoken_total > 0 and chunk_count else 0.0
 
@@ -1200,7 +1255,7 @@ async def stream_test(provider: dict, prompt: str, test_type: str = TEST_BENCHMA
 
     provider_name = provider.get("name", "?")
     model_id = provider.get("model_id", "?")
-    model_label = f"{provider_name}::{model_id}"
+    model_label = make_model_key(provider_name, model_id)
     is_health = test_type == TEST_HEALTH
 
     url, body, headers, api_token_limit, is_anthropic, request_timeout = _build_stream_request(provider, prompt, test_type)

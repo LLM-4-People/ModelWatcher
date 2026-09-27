@@ -7,11 +7,11 @@ This test scans every `except` block in the backend and flags broad
 Exception catches that contain only `pass` (no logging, no re-raise).
 """
 import ast
-import pathlib
 
 import pytest
 
-BACKEND = pathlib.Path(__file__).resolve().parents[2] / "backend"
+from backend.state import BACKEND_DIR
+
 
 # Known-acceptable bare-except-pass patterns (matched by function name + nearby context)
 KNOWN_OK_CONTEXTS = [
@@ -24,7 +24,7 @@ KNOWN_OK_CONTEXTS = [
 def _find_bare_pass_on_broad_exception():
     """Find every `except Exception: pass` or `except: pass` in backend."""
     violations = []
-    for f in sorted(BACKEND.glob("*.py")):
+    for f in sorted(BACKEND_DIR.glob("*.py")):
         src = f.read_text()
         try:
             tree = ast.parse(src)
@@ -71,7 +71,7 @@ def test_no_bare_pass_on_broad_exception():
 
 def test_audit_get_synbad_version_logs_errors():
     """audit.py _get_synbad_version should log errors, not silently pass."""
-    src = (BACKEND / "audit.py").read_text()
+    src = (BACKEND_DIR / "audit.py").read_text()
     # The old code was `except Exception: pass` - now it should log_error
     import re
     match = re.search(r"def _get_synbad_version", src)

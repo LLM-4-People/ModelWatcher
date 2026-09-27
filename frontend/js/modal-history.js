@@ -1,7 +1,7 @@
 // Modal history table: sortable columns, day separators, load-more pagination,
 // and mobile accordion view. Benchmark and health tabs share rendering but
 // use different column sets (BENCH_COLS vs HEALTH_COLS).
-import { esc, setHTML, logError, logTag } from './utils.js';
+import { esc, setHTML, logError, logTag, STATUS_GLYPH } from './utils.js';
 import { tpsColor, ttftColor, stallColor, p99ItlColor, tailColor, batchingColor, fmtLatency, fmtTps, fmtTail, fmtBatching, fmtMsCompact, STATUS_TEXT, recordErrorText, degradedDescHTML } from './format.js';
 import { registerTip } from './tooltips.js';
 import { fetchHistory, HISTORY_PAGE_SIZE } from './api.js';
@@ -36,9 +36,9 @@ function _okTdCls(h) {
 
 function _okCell(h) {
   if (h.retry_attempt) return _okTipCell(h, `\u21bb ${h.retry_attempt}/${h.retry_total || '?'}`, esc(recordErrorText(h) || 'Retry'), true);
-  if (h.degraded) return _okTipCell(h, '\u26a0', degradedDescHTML(h), true);
-  if (h.success) return '\u2713';
-  return _okTipCell(h, '\u2717', esc(recordErrorText(h) || 'Failed'), true);
+  if (h.degraded) return _okTipCell(h, STATUS_GLYPH.degraded, degradedDescHTML(h), true);
+  if (h.success) return STATUS_GLYPH.ok;
+  return _okTipCell(h, STATUS_GLYPH.failed, esc(recordErrorText(h) || 'Failed'), true);
 }
 
 function _okTipCell(h, symbol, tipContent, copyable) {
@@ -56,11 +56,11 @@ function _accMessageHTML(h) {
     return `<div class="mt-1 text-status-degraded">${msg}</div>${rid}`;
   }
   if (h.degraded) {
-    return `<div class="mt-1 text-status-degraded">\u26a0 ${degradedDescHTML(h)}</div>${rid}`;
+    return `<div class="mt-1 text-status-degraded">${STATUS_GLYPH.degraded} ${degradedDescHTML(h)}</div>${rid}`;
   }
   if (!h.success) {
     const msg = esc(recordErrorText(h) || 'Failed');
-    return `<div class="mt-1 text-status-error">\u2717 ${msg}</div>${rid}`;
+    return `<div class="mt-1 text-status-error">${STATUS_GLYPH.failed} ${msg}</div>${rid}`;
   }
   return '';
 }

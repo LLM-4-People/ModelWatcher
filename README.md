@@ -127,16 +127,6 @@ ModelWatcher is an installable progressive web app (PWA):
 - **Auto-update** - The service worker force-reloads all clients on deploy. No stale content is served because the service worker has no fetch handler (it never caches page content).
 - **Push prerequisites** - HTTPS is required for web push (the VAPID protocol needs a secure context). Set `app.site_url` and `app.vapid_email` in `config/app.yaml`. VAPID keys are auto-generated on first run and stored in `data/vapid_private.pem` + `data/vapid_public.txt`.
 
-```bash
-# Local setup
-python3 -m pip install -r requirements.txt -r requirements-dev.txt
-npm install
-npm run build:css   # build Tailwind CSS
-
-# Run tests
-npm test            # 89 pytest tests across 9 files
-```
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch strategy, code style, testing, and pull request guidelines.

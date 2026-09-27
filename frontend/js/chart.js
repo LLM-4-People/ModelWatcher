@@ -68,7 +68,7 @@ export function _loadChartJS() {
     s.src = `${prefix}/js/vendor/chart.umd.min.js`;
     s.onload = () => {
       if (typeof Chart !== 'undefined' && Chart.LogarithmicScale) {
-        try { Chart.register(Chart.LogarithmicScale); } catch (e) { /* already registered */ }
+        try { Chart.register(Chart.LogarithmicScale); } catch (e) { logDebug(logTag('Chart', '→', 'Register', 'LogarithmicScale', e?.message)); }
       }
       const a = document.createElement('script');
       a.src = `${prefix}/js/vendor/chartjs-adapter-date-fns.bundle.min.js`;

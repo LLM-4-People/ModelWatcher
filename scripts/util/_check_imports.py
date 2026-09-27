@@ -1,12 +1,12 @@
-"""Check backend modules for circular import risks."""
-import ast
-import os
+"""Check backend modules for circular import risks.
 
-BACKEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "backend")
-MODULES = sorted(
-    f[:-3] for f in os.listdir(BACKEND_DIR)
-    if f.endswith(".py") and f != "__init__.py"
-)
+Run from the project root: python3 -m scripts.util._check_imports
+"""
+import ast
+
+from backend.state import BACKEND_DIR
+
+MODULES = sorted(f.stem for f in BACKEND_DIR.glob("*.py") if f.name != "__init__.py")
 
 
 def find_parent_function(tree, target_node):
@@ -21,9 +21,7 @@ def find_parent_function(tree, target_node):
 
 def extract_imports(module_name):
     """Extract top-level and lazy backend imports from a module."""
-    filepath = os.path.join(BACKEND_DIR, module_name + ".py")
-    with open(filepath) as f:
-        source = f.read()
+    source = (BACKEND_DIR / f"{module_name}.py").read_text()
     tree = ast.parse(source)
 
     top_level = []  # [(line, target_module)]

@@ -6,7 +6,7 @@ Developer utilities for the ModelWatcher backend.
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Pytest unit tests for `backend/model_info.py` extraction rules. Run via `npm test` or `python3 -m pytest scripts/tests/ -v`. |
+| `tests/` | Pytest suite, shared fixtures in `tests/conftest.py`. Run via `npm test` or `python3 -m pytest scripts/tests/ -v`. |
 | `util/` | Reusable infrastructure scripts (circular-import checker, synthetic DB generator). |
 
 ## Running the tests
@@ -15,16 +15,16 @@ Developer utilities for the ModelWatcher backend.
 npm test                          # or: python3 -m pytest scripts/tests/ -v
 ```
 
-The tests are pure unit tests - they call `extract_model_info()` with synthetic
-flat-input dicts and assert the extracted fields. No API keys, no network, no
-database. They cover pricing normalization (per-token, per-million, cents-per-million),
-capability detection (vision/tools/structured-output/cache/thinking), context window
-resolution, suffix rules (Ollama), and two combined real-world model fixtures.
+What each test file covers is listed in
+[docs/DEVELOPMENT.md#testing](../docs/DEVELOPMENT.md#testing).
 
 ## Utilities
 
+Scripts import `backend` for its paths and helpers, so run them from the project
+root in module form:
+
 - `util/_check_imports.py` - scans `backend/` for lazy imports and reports the
-  no-circular-imports invariant. Run: `python3 scripts/util/_check_imports.py`
-- `util/scale_test_db.py` - generates a synthetic SQLite database with configurable
-  provider/model counts and history depth for scale testing. See its docstring for
-  usage.
+  no-circular-imports invariant. Run: `python3 -m scripts.util._check_imports`
+- `util/scale_test_db.py` - generates a synthetic SQLite database (backend schema),
+  matching YAML configs and favicons for scale testing. Run:
+  `python3 -m scripts.util.scale_test_db --help` for every option.

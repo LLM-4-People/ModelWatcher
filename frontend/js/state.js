@@ -29,17 +29,22 @@ export const state = {
   collapsedProviders: [],
   timeRanges: [],
   clientRTT: null,
-  healthInterval: 60,
-  healthEnabled: true,
-  auditEnabled: false,
-  auditInterval: 21600,
+  // Connection policy from the page bootstrap, refreshed by every WS hello (backend/websocket.py)
+  conn: globalThis.__MW_CONN__ ?? null,
+  // Config-derived values stay null until /api/config arrives: views render an unknown state
+  // instead of guessing (a guessed interval colored freshness wrongly, finding F6)
+  healthInterval: null,
+  healthEnabled: null,
+  auditEnabled: null,
+  auditInterval: null,
   auditSuites: {},
-  probeEnabled: false,
-  probeInterval: 86400,
-  benchmarkInterval: 3600,
+  probeEnabled: null,
+  probeInterval: null,
+  benchmarkInterval: null,
   colorThresholds: {},
   eventLabels: {},
   metricLabels: {},
+  testTypeLabels: {},
   statusValues: ['online', 'degraded', 'error', 'unknown'],
   testTypes: ['benchmark', 'health', 'audit', 'probe'],
   chartViews: ['speed', 'consistency', 'scores', 'health'],
@@ -72,6 +77,7 @@ export const state = {
   _pushExpired: false,
   _wsRestarting: false,
   _wsConnected: false,
+  _wsStatus: 'connecting',
   _apiFailStreak: 0,
   _backendDown: false,
   _suppressDeployReload: false,
@@ -220,6 +226,7 @@ export function applyConfig(cfg) {
   if (cfg.color_thresholds) state.colorThresholds = cfg.color_thresholds;
   if (cfg.event_labels) state.eventLabels = cfg.event_labels;
   if (cfg.metric_labels) state.metricLabels = cfg.metric_labels;
+  if (cfg.test_type_labels) state.testTypeLabels = cfg.test_type_labels;
   if (cfg.status_values) state.statusValues = cfg.status_values;
   if (cfg.test_types) state.testTypes = cfg.test_types;
   if (cfg.chart_views) state.chartViews = cfg.chart_views;

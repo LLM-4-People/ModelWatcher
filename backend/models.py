@@ -5,7 +5,7 @@ config lookup by model key. The registry is the single source of truth
 for which models exist and which provider they belong to.
 """
 
-from backend.state import models_cfg, model_registry, MODEL_INFO_FIELDS, ensure_scheme, _archived_model_keys
+from backend.state import models_cfg, model_registry, MODEL_INFO_FIELDS, ensure_scheme, make_model_key, _archived_model_keys
 
 _provider_by_name: dict[str, dict] = {}
 
@@ -46,7 +46,7 @@ def build_model_registry() -> list:
         provider_auto_archive = provider.get("auto_archive", True)
         for m in sorted(provider.get("models", []), key=lambda m: m.get("name", m["id"]).lower()):
             entry = {
-                "id": f"{provider_name}::{m['id']}",
+                "id": make_model_key(provider_name, m["id"]),
                 "provider": provider_name,
                 "model_id": m["id"],
                 "name": m.get("name", m["id"]),

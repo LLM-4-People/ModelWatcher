@@ -15,6 +15,7 @@ import backend.state as st
 from backend.stats import build_summary_response, build_chart_response, build_history_response, cached_card_buckets, build_model_info_summary, build_model_info_detail
 from backend.schemas import ClientErrorBody
 from backend.models import get_providers_grouped
+from backend.websocket import connection_config
 
 
 # ── Shared utilities (used by push_routes, notifications, etc.) ────────────
@@ -26,14 +27,9 @@ _config_cache: dict = {"raw": None, "etag": None, "expires": 0.0}
 
 
 def check_rate_limit(buckets: dict, key: str, window_s: float, max_count: int, label: str = "Rate limited") -> JSONResponse | None:
-    """Sliding-window rate limiter. Per-key (e.g. per-IP) or global (key='_g')."""
-    now = time.monotonic()
-    times = buckets.setdefault(key, [])
-    recent = [t for t in times if now - t < window_s]
-    times[:] = recent
-    if len(recent) >= max_count:
+    """Per-key (e.g. per-IP) or global (key='_g') sliding-window limit as an HTTP 429."""
+    if st.rate_limited(buckets.setdefault(key, []), window_s, max_count):
         return error_response(label, 429)
-    times.append(now)
     return None
 
 
@@ -129,9 +125,7 @@ def _file_version(path_suffix: str) -> str:
     import rewrite hashes (e.g. from './modal.js?v=old' despite modal.js
     having changed).
     """
-    f = st.FRONTEND_DIR / path_suffix
-    if not f.is_file() and path_suffix == "tailwind.min.css":
-        f = st.BUILT_CSS_PATH
+    f = st.BUILT_CSS_PATH if path_suffix == st.BUILT_CSS_NAME else st.FRONTEND_DIR / path_suffix
     is_js = path_suffix.startswith("js/") and path_suffix.endswith(".js")
     try:
         mt = f.stat().st_mtime
@@ -413,7 +407,8 @@ def index(request: Request):
         _console_level = _CONSOLE_LEVELS.get(st.c.log_level, 2)
         html = html.replace(
             '</head>',
-            f'<script nonce="{nonce}">window.__STATIC_PREFIX__="{prefix}";window.__APP_NAME__={orjson.dumps(st.c.app_name).decode()};window.__LOG_LEVEL__={_console_level}</script></head>',
+            f'<script nonce="{nonce}">window.__STATIC_PREFIX__="{prefix}";window.__APP_NAME__={orjson.dumps(st.c.app_name).decode()};'
+            f'window.__LOG_LEVEL__={_console_level};window.__MW_CONN__={orjson.dumps(connection_config()).decode()}</script></head>',
             1,
         )
         html = html.replace('<script type="module"', f'<script type="module" nonce="{nonce}"', 1)
@@ -544,7 +539,7 @@ async def get_metrics(request: Request):
                 if skip_models:
                     continue
                 if model_filter_set:
-                    pname = k.split("::")[0]
+                    pname = st.parse_model_key(k)[0]
                     if pname not in model_filter_set:
                         continue
                 if include_card_buckets:
@@ -606,6 +601,7 @@ def get_config(request: Request):
             "time_ranges": st.c.time_ranges,
             "status_values": st.STATUS_VALUES,
             "test_types": st.TEST_TYPES,
+            "test_type_labels": st.TEST_TYPE_LABELS,
             "chart_views": st.CHART_VIEWS,
             "event_labels": st.EVENT_LABELS,
             "metric_labels": st.METRIC_LABELS,
@@ -703,7 +699,15 @@ async def get_model_info(request: Request, model: str = Query(default=None, max_
     return _etag_response(request, body=st.model_info_response_cache["raw"], etag=st.model_info_response_cache["etag"])
 
 def built_css():
-    return Response(content=st.BUILT_CSS_PATH.read_bytes(), media_type="text/css")
+    try:
+        body = st.BUILT_CSS_PATH.read_bytes()
+    except OSError as e:
+        st.log_error(
+            f"Built CSS unreadable at {st.BUILT_CSS_PATH} - run `{st.BUILT_CSS_BUILD_CMD}` "
+            "or point MW_BUILT_CSS_PATH at the built file", e,
+        )
+        return error_response("Stylesheet not built", 404)
+    return Response(content=body, media_type="text/css")
 
 
 async def handle_client_error(request: Request, body: ClientErrorBody):

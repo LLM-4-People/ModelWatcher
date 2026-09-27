@@ -6,7 +6,6 @@ two places defining the same fields, guaranteed to drift.
 Catches bug family #11: duplicate imports (e.g., _hexToRgba imported twice).
 """
 import ast
-import pathlib
 
 import pytest
 
@@ -14,8 +13,7 @@ from backend.schemas import (
     PushSubscribeBody, PushUnsubscribeBody, PushUpdatePrefsBody,
     PushTestBody, ClientErrorBody, PushKeys,
 )
-
-BACKEND = pathlib.Path(__file__).resolve().parents[2] / "backend"
+from backend.state import BACKEND_DIR, FRONTEND_DIR
 
 
 def test_push_subscribe_body_fields():
@@ -83,20 +81,19 @@ def test_client_error_body_fields():
 
 def test_no_openapi_extra_in_main():
     """main.py should not contain openapi_extra (replaced by Pydantic models)."""
-    src = (BACKEND / "main.py").read_text()
+    src = (BACKEND_DIR / "main.py").read_text()
     assert "openapi_extra" not in src, "main.py should not use openapi_extra (Pydantic models auto-generate schema)"
 
 
 def test_push_routes_uses_models_not_parse_json_body():
     """push_routes.py should not call parse_json_body (Pydantic handles parsing)."""
-    src = (BACKEND / "push_routes.py").read_text()
+    src = (BACKEND_DIR / "push_routes.py").read_text()
     assert "parse_json_body" not in src, "push_routes.py should not use parse_json_body (Pydantic handles body parsing)"
 
 
 def test_no_duplicate_imports_in_chart_helpers():
     """chart-helpers.js should not import the same symbol twice."""
-    import pathlib
-    frontend = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "js"
+    frontend = FRONTEND_DIR / "js"
     src = (frontend / "chart-helpers.js").read_text()
     import_lines = [l.strip() for l in src.splitlines() if l.strip().startswith("import")]
     imported_names = []

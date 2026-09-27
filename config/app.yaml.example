@@ -60,6 +60,13 @@ testing:
     # budget_tokens must be < max_tokens, hence min(target-1, budget).
     # Set to null to disable Anthropic extended thinking entirely (param omitted).
     anthropic_thinking_budget: 3200
+    # tiktoken encoding used to count streamed tokens: cross-validates provider-reported
+    # completion_tokens and normalizes ITL when a provider batches several tokens per chunk.
+    # Loaded in the background on first use and cached under data/tiktoken (TIKTOKEN_CACHE_DIR),
+    # so a deployment downloads it once. Until it is available, counts fall back to chunk counts.
+    token_encoding: "o200k_base"
+    # Wait this long before retrying a failed encoding load (duration: 30m, 1h, 1d, ...)
+    token_encoding_retry: 1h
     # Test prompts
     prompts:
       # Suffix appended to every random prompt - drives output length for TPS/TTFT measurement
@@ -138,11 +145,31 @@ stalls:
 
 # WebSocket settings
 websocket:
-  # Protocol-level WS ping/pong is configured via uvicorn CLI flags
-  # (--ws-ping-interval, --ws-ping-timeout) - see Dockerfile
-  # Empty list = all origins allowed (not recommended for production)
+  # Pages served by this server (Origin host equals the Host header) are always accepted.
+  # List any other origins allowed to open the socket; an empty list accepts every origin
+  # (not recommended for production)
   allowed_origins:
     - *site_url
+  # Seconds between server heartbeat messages, so clients can tell a quiet server from a
+  # dead socket. Protocol-level ping/pong (the server dropping dead clients) is set by the
+  # uvicorn flags --ws-ping-interval/--ws-ping-timeout - see Dockerfile
+  heartbeat_interval: 30
+  # Clients reconnect after this many seconds without any message (must exceed heartbeat_interval)
+  stale_after: 75
+  # Client reconnect delay in seconds: starts at min_delay and doubles per attempt that
+  # never reached the server, up to max_delay (also the pace after an origin rejection)
+  reconnect:
+    min_delay: 3
+    max_delay: 60
+  # After this many consecutive failed requests the page shows "Server unreachable", then
+  # checks the liveness endpoint (and retries the socket no faster than) every retry_interval seconds
+  unreachable:
+    after_failures: 3
+    retry_interval: 15
+  # Larger client messages close the connection (code 1009)
+  max_message_bytes: 10240
+  # Max notification-prefs syncs per minute per connection; extra syncs are ignored
+  sync_prefs_per_minute: 30
 
 # Notification settings
 notifications:

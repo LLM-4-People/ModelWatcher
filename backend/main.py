@@ -24,6 +24,7 @@ from backend.stats import compute_trends, compute_reliability_score, bench_only
 from backend.websocket import ws_mgr, websocket_endpoint
 from backend.middleware import ConnectionLimiterMiddleware, SecurityHeadersMiddleware, RequestSizeLimitMiddleware
 from backend.scheduler import scheduler
+from backend.streaming import get_encoder
 from backend.state import TEST_BENCHMARK
 from backend import routes
 from backend import notifications
@@ -47,6 +48,41 @@ def _async_exception_handler(loop, context):
     msg = context.get("message", "Unhandled exception in async task")
     exc = context.get("exception")
     st.log_error(msg, exc)
+
+
+def _start_scheduler():
+    st._scheduler_task = st.create_task(scheduler(), name="scheduler")
+
+
+def _start_broadcast_batcher():
+    from backend.scheduler import BroadcastBatcher
+    import backend.scheduler as _sched
+    _sched.broadcast_batcher = BroadcastBatcher(flush_interval=st.c.write_batch_interval)
+    _sched.broadcast_batcher.start()
+    st.log.info("BroadcastBatcher started (interval=%.1fs)", st.c.write_batch_interval)
+
+
+def _start_config_watcher():
+    if st.awatch:
+        st._config_watcher_task = st.create_task(config_watcher(), name="config_watcher")
+
+
+def _start_model_info_fetch():
+    from backend import model_info as _mi
+    _mi.start_model_info_fetch()
+
+
+# Background work that exists to run tests, in start order. MW_DISABLE_TESTS skips all of it,
+# and the startup log names exactly these, so the two cannot drift apart.
+_TEST_TASKS = {
+    # Loads now so the encoder is ready before the first benchmark
+    "token encoder": get_encoder,
+    "scheduler": _start_scheduler,
+    "broadcast batcher": _start_broadcast_batcher,
+    "config watcher": _start_config_watcher,
+    "favicons": favicons.start_favicon_fetch,
+    "model info": _start_model_info_fetch,
+}
 
 
 async def _startup():
@@ -198,21 +234,14 @@ async def _startup():
     if not st.c.allowed_ws_origins:
         st.log.warning("allowed_ws_origins is empty - all WebSocket origins accepted")
 
-    _disable_tests = bool(os.environ.get("MW_DISABLE_TESTS"))
-    if _disable_tests:
-        st.log.info("MW_DISABLE_TESTS set - scheduler, favicons, ping disabled")
+    # Always on: clients treat a silent socket as dead, whether or not tests run
+    ws_mgr.start_heartbeat()
+
+    if os.environ.get("MW_DISABLE_TESTS"):
+        st.log.info("MW_DISABLE_TESTS set - not starting: %s", ", ".join(_TEST_TASKS))
     else:
-        st._scheduler_task = st.create_task(scheduler(), name="scheduler")
-        from backend.scheduler import BroadcastBatcher
-        import backend.scheduler as _sched
-        _sched.broadcast_batcher = BroadcastBatcher(flush_interval=st.c.write_batch_interval)
-        _sched.broadcast_batcher.start()
-        st.log.info("BroadcastBatcher started (interval=%.1fs)", st.c.write_batch_interval)
-        if st.awatch:
-            st._config_watcher_task = st.create_task(config_watcher(), name="config_watcher")
-        favicons.start_favicon_fetch()
-        from backend import model_info as _mi
-        _mi.start_model_info_fetch()
+        for start in _TEST_TASKS.values():
+            start()
 
     st.log.info("Startup complete - %d models registered", len(st.model_registry))
 
@@ -226,7 +255,7 @@ async def _shutdown():
     except Exception as e:
         st.log_error("WS shutdown notify failed", e)
     try:
-        await ws_mgr.close_all(code=1001, reason="server restarting")
+        await ws_mgr.close_all()
     except Exception as e:
         st.log_error("WS close_all failed", e)
 
@@ -326,7 +355,7 @@ app.add_middleware(ConnectionLimiterMiddleware)
 
 # ── Frontend assets (excluded from OpenAPI schema) ──────────────────────────
 
-@app.get(f"{st.c.static_url_prefix}/tailwind.min.css", include_in_schema=False)
+@app.get(f"{st.c.static_url_prefix}/{st.BUILT_CSS_NAME}", include_in_schema=False)
 def _built_css():
     return routes.built_css()
 
@@ -415,6 +444,14 @@ async def _get_metrics(request: Request,
          responses={503: {"description": "Service degraded or unhealthy"}})
 def _health_check():
     return routes.health_check()
+
+
+@app.get(st.LIVENESS_PATH, tags=["Health"], summary="Liveness check",
+         description="Returns `200 {\"status\":\"alive\"}` whenever the server process answers requests, "
+                     "whatever the state of the scheduler or the models. The dashboard polls it while the server "
+                     "looks unreachable; `/health` is the readiness check.")
+def _liveness_check():
+    return {"status": "alive"}
 
 
 @app.get("/api/audit", tags=["Audit"], summary="Get audit test results",
@@ -516,7 +553,7 @@ def _get_notifications(since: str = Query(default=None, description="ISO 8601 da
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
 
-app.websocket("/ws")(websocket_endpoint)
+app.websocket(st.WS_PATH)(websocket_endpoint)
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────

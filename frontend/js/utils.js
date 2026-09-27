@@ -1,5 +1,31 @@
 // Pure helpers + shared UI primitives (leaf node - zero imports from other modules).
-// Exports HELP dict, logging, HTML escaping, collapsible system, touch detection.
+// Exports HELP dict, logging, HTML escaping, status glyphs, segment/separator markup,
+// collapsible system, touch detection. Touches no DOM at import, so node --test can load it.
+
+// One glyph per outcome, for every status mark the UI draws (check line, badges, history, notifications)
+export const STATUS_GLYPH = { ok: '\u2713', degraded: '\u26a0', failed: '\u2717', unknown: '\u25cb' };
+
+// Separator glyphs. Rendered lists use sepHTML() inside segmentsHTML(); plain text
+// (tooltips, aria-label, title, copied text) joins with SEP_TEXT.
+export const SEP = { dot: '\u00b7', slash: '/' };
+export const SEP_TEXT = ` ${SEP.dot} `;
+
+export function sepHTML(kind) {
+  if (kind === 'rule') return '<span class="seg-rule" aria-hidden="true"></span>';
+  return `<span class="seg-sep" aria-hidden="true">${SEP[kind]}</span>`;
+}
+
+// A row of segments whose spacing comes only from the .seg-list flex gap. A nested group
+// must itself be a segmentsHTML() list, never a plain wrapper: a plain wrapper is one flex
+// item whose children lay out inline with no gap at all (finding F6, "·OK10h 8m").
+// The spaces between items are not rendered by flex layout; they keep copied text readable.
+export function segmentsHTML(parts, { sep = null, cls = '', attrs = '' } = {}) {
+  const items = parts.filter(Boolean);
+  if (!items.length) return '';
+  const joiner = sep ? ` ${sepHTML(sep)} ` : ' ';
+  return `<span class="seg-list${cls ? ' ' + cls : ''}"${attrs ? ' ' + attrs : ''}>${items.join(joiner)}</span>`;
+}
+
 export const HELP = {
   models: 'Total models being monitored.<br>Updated when config changes.',
   online: 'Models responding successfully.<br>Refreshed after each benchmark run.',
@@ -13,12 +39,13 @@ export const HELP = {
   ws_connected: 'Connected - receiving live updates.<br>Results appear instantly when tests complete.',
   ws_disconnected: 'Disconnected - will retry automatically.<br>Updates may be delayed until reconnected.',
   ws_connecting: 'Connecting to server...<br>Live updates will begin once connected.',
-  ws_error: 'Connection error - will retry automatically.<br>Check your network connection.',
   ws_restarting: 'Server is restarting - reconnecting...<br>Live updates will resume shortly.',
+  ws_busy: 'Server is at its connection limit - retrying.<br>Data still refreshes periodically meanwhile.',
+  ws_rejected: 'Live updates refused: the server does not accept connections from this address (origin).<br>Data still refreshes periodically. Ask the operator to add it to websocket.allowed_origins.',
   ws_down: 'Server unreachable - will retry automatically when connection is restored.',
   ttft: 'Delay before the model starts generating.<br>For thinking models, this is time to first reasoning token.',
   tps: 'Wall-clock tokens per second (includes stalls and thinking tokens).',
-  itlReliable: 'Raw ITL metrics are trustworthy measurements.<br>✓ = shrinkage OK, low burst, enough samples.',
+  itlReliable: `Raw ITL metrics are trustworthy measurements.<br>${STATUS_GLYPH.ok} = shrinkage OK, low burst, enough samples.`,
   uptime: 'Successful test percentage over recent runs.',
   stall: 'Pause over 500ms between words.',
   chunkCv: 'Coefficient of variation of per-chunk token counts.<br>Low CV = uniform chunks (reliable ITL). High CV = uneven chunks (ITL less meaningful).',
@@ -41,7 +68,8 @@ export const HELP = {
   stallLast: 'Position of the last stall as a percentage through the output.',
   stallClusters: 'Number of distinct groups of stalls (stalls close together count as one cluster).',
   stallRatio: 'Fraction of total generation time spent in stalls.',
-  ok: 'Whether the test request succeeded or failed.<br><span class="text-status-online">✓</span> success<br><span class="text-status-degraded">⚠</span> degraded / retry attempt<br><span class="text-status-error">✗</span> failure',
+  ok: `Whether the test request succeeded or failed.<br><span class="text-status-online">${STATUS_GLYPH.ok}</span> success<br><span class="text-status-degraded">${STATUS_GLYPH.degraded}</span> degraded / retry attempt<br><span class="text-status-error">${STATUS_GLYPH.failed}</span> failure`,
+  checkLine: `Time since each check last ran, colored by freshness.<br>${STATUS_GLYPH.ok} passed, ${STATUS_GLYPH.degraded} degraded, ${STATUS_GLYPH.failed} failed, ${STATUS_GLYPH.unknown} no result yet.<br>After a failure, "OK" shows the time since the last success.`,
   batching: 'Tokens per SSE delivery from the provider.<br>1× = token-by-token (ideal). Higher = batched delivery.',
   reasoning: 'Thinking tokens spent on chain-of-thought reasoning. Included in total output count. Generated before the visible answer.',
   completionTokens: 'Total output tokens (includes thinking tokens for reasoning models). Provider-reported, or counted via tiktoken.',
@@ -73,8 +101,8 @@ export const HELP = {
   archived: 'This model or provider is archived. Archived models are not tested but historical data is preserved.',
 };
 
-const _P = () => (window.__APP_NAME__ || 'ModelWatcher') + ':';
-const _LL = () => window.__LOG_LEVEL__ ?? 2;  // 0=debug, 1=info, 2=warn, 3=error
+const _P = () => (globalThis.__APP_NAME__ || 'ModelWatcher') + ':';
+const _LL = () => globalThis.__LOG_LEVEL__ ?? 2;  // 0=debug, 1=info, 2=warn, 3=error
 const _fmt = (s, a) => { let i = 0; return s.replace(/%[sdfo]/g, () => a[i++] ?? ''); };
 
 export function logDebug(ctx, ...args) { if (_LL() <= 0) console.debug(_P() + ' ' + _fmt(ctx, args)); }
@@ -88,6 +116,7 @@ const _errTS = { last: 0, count: 0 };
 export function reportClientError(payload) {
   const now = Date.now();
   if (now - _errTS.last < 1000) { if (++_errTS.count > 5) return; } else { _errTS.last = now; _errTS.count = 1; }
+  // logWarn only writes to the console, so failing to report cannot feed back into this reporter
   try {
     fetch('/api/client-error', {
       method: 'POST',
@@ -95,8 +124,8 @@ export function reportClientError(payload) {
       body: JSON.stringify(payload),
       keepalive: true,
       credentials: 'same-origin',
-    }).catch(() => {});
-  } catch (e) { console.warn('[ModelWatcher] client error report failed', e); }
+    }).catch(e => logWarn(logTag('App', '→', 'ClientErrorReport', 'Failed'), e));
+  } catch (e) { logWarn(logTag('App', '→', 'ClientErrorReport', 'Failed'), e); }
 }
 
 export function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
@@ -141,23 +170,7 @@ export function esc(s) {
   return String(s).replace(_escRe, c => _escMap[c]);
 }
 
-let _recentTouch = false;
-let _recentTouchTimer = 0;
-let _touchMoved = false;
-
-document.addEventListener('touchstart', () => {
-  _recentTouch = true; _touchMoved = false; clearTimeout(_recentTouchTimer);
-}, { passive: true });
-document.addEventListener('touchmove', () => { _touchMoved = true; }, { passive: true });
-document.addEventListener('touchend', () => {
-  clearTimeout(_recentTouchTimer);
-  _recentTouchTimer = setTimeout(() => { _recentTouch = false; }, 400);
-}, { passive: true });
-
-export function isRecentTouch() { return _recentTouch; }
-export function wasTouchMove() { return _touchMoved; }
-
-export const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+export function isTouchDevice() { return 'ontouchstart' in window || navigator.maxTouchPoints > 0; }
 
 export function initSheetDrag({ handleSelector, panelId, closeFn, threshold = 60, snapMs = 200 }) {
   const panel = document.getElementById(panelId);
@@ -217,20 +230,18 @@ export function kvRow(label, valueHTML, { mono } = {}) {
   return `<span class="kv-label">${label}</span><span class="kv-value${cls}">${valueHTML}</span>`;
 }
 
-export function kvSep() {
-  return '<hr class="kv-sep">';
-}
+const _KV_SEP = '<hr class="kv-sep">';
+export function kvSep() { return _KV_SEP; }
 
-const _SEP = '<hr class="kv-sep">';
 export function kvGrids(rows) {
   const groups = [[]];
   for (const r of rows) {
-    if (r === _SEP) { groups.push([]); continue; }
+    if (r === _KV_SEP) { groups.push([]); continue; }
     groups[groups.length - 1].push(r);
   }
   return groups.filter(g => g.length)
     .map(g => `<div class="kv-grid">${g.join('')}</div>`)
-    .join(_SEP);
+    .join(_KV_SEP);
 }
 
 export const _EPHEMERAL = ['testing', 'testing_type', 'testing_audit', 'retry_attempt', 'retry_total', 'last_audit_result', 'last_audit_epoch', 'testing_probe', 'last_probe_epoch', 'last_probe_result', 'last_success_test', 'last_success_epoch'];

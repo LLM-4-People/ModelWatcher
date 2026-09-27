@@ -1,11 +1,11 @@
 // Detail modal: full metrics grid, four chart views, fullscreen chart, history
 // table with sort/pagination, and audit suites. updateModalIfNeeded does a
 // lightweight DOM refresh (no rebuild) when the open model receives a WS result.
-import { state } from './state.js';
-import { slug, esc, logError, logDebug, logTag, collapsibleHTML, toggleCollapsible, BP_SM, kvRow, kvSep, kvGrids, setHTML } from './utils.js';
-import { _tierColor, tpsColor, ttftColor, uptimeColor, p99ItlColor, tailColor, batchingColor, stallColor, fmtNum, fmtTps, fmtTTFT, fmtUptime, fmtTail, fmtBatching, fmtCritical, fmtMsCompact, fmtContext, fmtPrice, fmtPricePair, fmtEventTime, timeAgo, STATUS_TEXT, recordErrorText, degradedDescHTML, metricCellHTML, moeDetail } from './format.js';
+import { state, LS } from './state.js';
+import { slug, esc, logError, logDebug, logTag, collapsibleHTML, toggleCollapsible, BP_SM, kvRow, kvSep, kvGrids, setHTML, STATUS_GLYPH, SEP_TEXT, segmentsHTML } from './utils.js';
+import { _tierColor, tpsColor, ttftColor, uptimeColor, p99ItlColor, tailColor, batchingColor, stallColor, fmtNum, fmtTps, fmtTTFT, fmtUptime, fmtTail, fmtBatching, fmtCritical, fmtMsCompact, fmtContext, fmtPrice, fmtPricePair, fmtEventTime, timeAgo, STATUS_TEXT, recordErrorText, degradedDescHTML, metricCellHTML, moeDetail, testTypeLabel } from './format.js';
 import { _loadChartJS, initChart, updateChartView, CHART_VIEWS, clearModelChartCache, chartPhHTML } from './chart.js';
-import { cardBadges, reliableIndicator, modalCheckLineHTML, providerName, _statusMessage, _eventTimestamp, _healthErrorIfNewer, statusDecorState, applyStatusDecor } from './dom.js';
+import { cardBadges, reliableIndicator, renderModalCheckLine, providerName, _statusMessage, _eventTimestamp, _healthErrorIfNewer, statusDecorState, applyStatusDecor } from './dom.js';
 import { api, fetchModelInfoDetail } from './api.js';
 import { registerTip, clearTips } from './tooltips.js';
 import {
@@ -53,7 +53,8 @@ function _modalTitleHTML(entry) {
   } else {
     provider = providerName(entry.provider, url, pCls, logo, title);
   }
-  return `<span class="flex items-center whitespace-nowrap">${provider} <span class="text-text-faint mx-1">&middot;</span> <span class="text-text-secondary">${esc(entry.name)}</span></span><div class="text-xs font-mono text-text-muted ml-0 overflow-hidden text-ellipsis whitespace-nowrap">${esc(entry.model_id)}</div>`;
+  const line = segmentsHTML([provider, `<span class="text-text-secondary">${esc(entry.name)}</span>`], { sep: 'dot', cls: 'whitespace-nowrap' });
+  return `${line}<div class="text-xs font-mono text-text-muted ml-0 overflow-hidden text-ellipsis whitespace-nowrap">${esc(entry.model_id)}</div>`;
 }
 
 let _dataAgeSec = 0;
@@ -81,7 +82,7 @@ function _fetchAuditEvals(modelId) {
         if (entry) infoEl.innerHTML = _modalInfoHTML(entry, md);
       }
     }
-  }).catch(() => {});
+  }).catch(e => logError(logTag('Modal', '←', 'Error', 'AuditEvals'), e));
 }
 
 function _fetchModelInfoDetail(modelId) {
@@ -95,7 +96,7 @@ function _fetchModelInfoDetail(modelId) {
       const md = state.metrics[modelId];
       if (entry && md) infoEl.innerHTML = _modalInfoHTML(entry, md);
     }
-  }).catch(() => {});
+  }).catch(e => logError(logTag('Modal', '←', 'Error', 'ModelInfoDetail'), e));
 }
 
 // ── Last raw benchmark expandable section ─────────────────────────────
@@ -248,21 +249,20 @@ id: 'audit-results', title: 'Last Audits',
 
   return collapsibleHTML({
     id: 'audit-results', title: 'Last Audits',
-    bodyHTML: sections.join('<hr class="kv-sep my-2">'),
+    bodyHTML: sections.join(kvSep()),
     open: _isAccOpen('audit-results', false), wrapperCls: 'bg-overlay rounded-lg mb-4 overflow-hidden',
   });
 }
 
 // ── Modal info section (DRY: shared by openModal + updateModalIfNeeded) ───
 
-const _MW_ACC_COLLAPSED = 'mw_acc_collapsed';
-function _accState(id) {
-  try { return JSON.parse(localStorage.getItem(_MW_ACC_COLLAPSED) || '{}'); } catch { return {}; }
+function _accState() {
+  try { return JSON.parse(localStorage.getItem(LS.ACC_COLLAPSED) || '{}'); } catch (e) { logError(logTag('Modal', '←', 'Error', 'AccordionState'), e); return {}; }
 }
 function _setAccCollapsed(id, closed) {
   const s = _accState();
   s[id] = closed;
-  try { localStorage.setItem(_MW_ACC_COLLAPSED, JSON.stringify(s)); } catch { /* ignore */ }
+  try { localStorage.setItem(LS.ACC_COLLAPSED, JSON.stringify(s)); } catch (e) { logError(logTag('Modal', '→', 'Error', 'AccordionState'), e); }
 }
 function _isAccOpen(id, fallback) {
   const s = _accState();
@@ -309,7 +309,7 @@ function _modelInfoSectionHTML(entry) {
   }
   const tech = [];
   if (_hasParams) tech.push(kvRow('Parameters:', esc(e.param_count) + (_hasMoe ? ' <span class="kv-unit">MoE</span>' : ''), { mono: true }));
-  if (e.architecture) tech.push(kvRow('Architecture:', esc(e.architecture) + (_hasMoe ? ' · MoE' : '')));
+  if (e.architecture) tech.push(kvRow('Architecture:', esc(e.architecture) + (_hasMoe ? `${SEP_TEXT}MoE` : '')));
   if (_hasMoe) tech.push(kvRow('Experts:', esc(moeDetail(e)), { mono: true }));
   if (e.quantization) tech.push(kvRow('Quantization:', esc(e.quantization)));
   if (caps.length) tech.push(kvRow('Capabilities:', esc(caps.join(', '))));
@@ -350,7 +350,7 @@ function _modalInfoHTML(entry, data) {
       const parts = [];
       if (crt != null && crt > 0) parts.push(`Your latency: ${crt}ms`);
       if (art != null) parts.push(`API latency: ${Math.round(art)}ms`);
-      return `<div class="text-[10px] text-text-muted mb-4">${parts.join(' \u00b7 ')}</div>`;
+      return `<div class="text-[10px] text-text-muted mb-4">${segmentsHTML(parts.map(t => `<span>${t}</span>`), { sep: 'dot' })}</div>`;
     })()}
     ${(() => {
       const msg = _statusMessage(data, lt);
@@ -362,8 +362,8 @@ function _modalInfoHTML(entry, data) {
       const rid = healthNewer ? (data.health_request_id || lt.request_id) : lt.request_id;
       return `
     <div class="${isDeg ? 'bg-warn-500/10 border-warn-500/20' : 'bg-danger-500/10 border-danger-500/20'} border rounded-lg p-3 mb-4">
-      <div class="text-xs font-medium ${isDeg ? 'text-warn-400' : 'text-danger-400'} mb-1">${isDeg ? '\u26a0 Degraded' : 'Error'}</div>
-      <div class="border-t border-surface-700/30 mb-2"></div><div class="text-[10px] ${isDeg ? STATUS_TEXT.degraded : STATUS_TEXT.error} font-mono">${eventTs ? `<span class="text-text-muted">${esc(fmtEventTime(eventTs))}</span><span class="text-text-muted/40 mx-0.5">\u00b7</span>` : ''}${isDeg && lt.degraded ? degradedDescHTML(lt) : esc(msg || recordErrorText(lt))}</div>
+      <div class="text-xs font-medium ${isDeg ? 'text-warn-400' : 'text-danger-400'} mb-1">${isDeg ? `${STATUS_GLYPH.degraded} Degraded` : 'Error'}</div>
+      <div class="border-t border-surface-700/30 mb-2"></div><div class="text-[10px] ${isDeg ? STATUS_TEXT.degraded : STATUS_TEXT.error} font-mono">${segmentsHTML([eventTs ? `<span class="text-text-muted whitespace-nowrap">${esc(fmtEventTime(eventTs))}</span>` : '', `<span>${isDeg && lt.degraded ? degradedDescHTML(lt) : esc(msg || recordErrorText(lt))}</span>`], { sep: 'dot' })}</div>
       ${rid ? `<div class="text-[10px] text-text-muted/60 font-mono mt-1.5" title="Provider request ID">req: ${esc(rid)}</div>` : ''}
     </div>`;
     })()}
@@ -441,8 +441,7 @@ export function openModal(key) {
   const modalEl = document.getElementById('modal');
   const titleEl = document.getElementById('modal-title');
   if (titleEl) titleEl.innerHTML = _modalTitleHTML(entry);
-  const chkEl = document.getElementById('modal-chk');
-  if (chkEl) { chkEl.innerHTML = modalCheckLineHTML(data); chkEl.dataset.mwModel = entry.id; }
+  renderModalCheckLine(entry.id);
   const badgesEl = document.getElementById('modal-badges');
   if (badgesEl) badgesEl.innerHTML = cardBadges(data.last_test || {}, data.status, data, entry);
   const decor = document.getElementById('modal-decor');
@@ -479,8 +478,7 @@ export function openModal(key) {
     slot.outerHTML = `
     <div class="flex items-center gap-2 mb-2 shrink-0">
       <span class="text-xs font-medium text-text-primary">History</span>
-      <button id="hist-tab-health" class="chart-view-pill${getHistoryTab() === 'health' ? ' active' : ''}" data-hist-tab="health">Health</button>
-      <button id="hist-tab-benchmark" class="chart-view-pill${getHistoryTab() === 'benchmark' ? ' active' : ''}" data-hist-tab="benchmark">Bench</button>
+      ${['health', 'benchmark'].map(t => `<button id="hist-tab-${t}" class="chart-view-pill${getHistoryTab() === t ? ' active' : ''}" data-hist-tab="${t}">${esc(testTypeLabel(t))}</button>`).join('')}
         <button id="toggle-cols" class="chart-view-pill${_showTier2() ? ' active' : ''}${BENCH_COLS.some(c => c.tier2) && getHistoryTab() === 'benchmark' ? '' : ' hidden'}" data-tip="toggleColumns">+ Columns</button>
      </div>
      <div class="flex items-center gap-2 mb-2 shrink-0">
@@ -628,7 +626,7 @@ export function updateModalIfNeeded(modelId, { record, testType } = {}) {
   if (!entry) return;
 
   setHTML(document.getElementById('modal-title'), _modalTitleHTML(entry));
-  setHTML(document.getElementById('modal-chk'), modalCheckLineHTML(data));
+  renderModalCheckLine(modelId);
   setHTML(document.getElementById('modal-badges'), cardBadges(data.last_test || {}, data.status, data, entry));
   applyStatusDecor(document.getElementById('modal-decor'), data);
   setHTML(document.getElementById('modal-info'), _modalInfoHTML(entry, data));
