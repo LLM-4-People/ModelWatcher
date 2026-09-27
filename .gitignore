@@ -32,6 +32,7 @@
 !requirements-dev.txt
 !package.json
 !.gitignore
+!.gitattributes
 !.env.example
 
 __pycache__/

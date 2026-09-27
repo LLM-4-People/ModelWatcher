@@ -17,7 +17,7 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 | F8 | tests | `test_api_errors.py` calls the production host `https://stats.ai4fun.dev`, so 6 tests fail offline and the suite checks a remote deployment instead of the checked-out code | medium | open |
 | F9 | docker | `COPY config/ config/` in the Dockerfile bakes the build host's local `config/*.yaml` (gitignored, may hold inline keys) into image layers; the later `COPY config/*.example config/` is redundant | medium | open |
 | F10 | scripts | `_check_imports.py` ranks modules with a hand-kept `CHAIN` that misses `audit`, `db_probe`, `db_push`, `migrations` and others and still lists the removed `ping`, so it reports false violations | low | open |
-| F11 | repo | Mixed CRLF/LF line endings in 8 tracked files; any edit that normalises them turns into a whole-file diff | low | open |
+| F11 | repo | Mixed CRLF/LF line endings in 8 tracked files; any edit that normalises them turns into a whole-file diff | low | fixed |
 | F12 | backend | `favicons.root_url()` keeps the last two host labels, so IP hosts become invalid URLs (`https://127.0.0.1:9/v1` becomes `https://0.1:9`) and multi-part TLDs collapse (`api.example.co.uk` becomes `co.uk`) | low | open |
 | F13 | backend | 43 `except` blocks neither log nor re-raise, against the CONTRIBUTING.md rule; `test_error_logging.py` only catches `except Exception: pass` | low | open |
 | F14 | frontend | 11 JS `catch` handlers neither log nor re-throw, and the client-error reporter writes to `console` directly; no test enforces the CONTRIBUTING.md rule for JS | low | fixed |
@@ -144,6 +144,8 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Reproduce: `git ls-files --eol` shows `i/mixed` for `backend/config.py`, `main.py`, `streaming.py`, `model_info.py`, `notifications.py`, `scheduler.py`, `frontend/index.html` and `frontend/js/ws.js` (the first three are almost entirely CRLF).
 - Impact: tools that write LF turn a small change into a whole-file diff; the F2 work had to restore CRLF line by line to keep its diff reviewable.
 - Proposed fix: a `.gitattributes` with `* text=auto eol=lf` and a dedicated renormalisation commit.
+- Fix: `.gitattributes` sets `* text=auto eol=lf` (whitelisted in `.gitignore`, which ignores everything by default); the 8 files were converted and `git add --renormalize .` run in a commit of its own, whose diff is empty under `--ignore-cr-at-eol`. The conftest `git` fixture is now the one git runner (`git_ignored` builds on it).
+- Tests: `test_line_endings.py` (`.gitattributes` exists and is not ignored, every tracked file carries `text=auto eol=lf`, no CRLF or mixed endings in the index or the working tree). Mutation-checked: all 4 fail on the old tree; a `.gitattributes` without the rule fails the attribute case; a CRLF rewrite of `main.py` fails the working-tree case.
 
 ### F12 - favicon root URL for IP hosts
 

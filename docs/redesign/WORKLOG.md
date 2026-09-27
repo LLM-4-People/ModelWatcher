@@ -61,7 +61,7 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - Environment: general web egress is blocked (Kagi, jsdelivr, the live instance), so research agents use the built-in web search and fetch tools.
 - `pkill -f` with a pattern that also appears in the invoking shell command kills the shell itself; use a bracketed pattern such as `pgrep -f "[u]vicorn backend"`.
 - The bracket trick does not help when the same shell command also launched the server: the launch text contains the plain pattern, so `pgrep` matches the shell. Launch and kill in separate commands.
-- `backend/config.py`, `main.py`, `streaming.py`, `frontend/index.html` and `frontend/js/ws.js` are CRLF-dominant (F11). Edit them byte-wise or restore endings afterwards (a difflib pass that gives unchanged lines their HEAD ending and new lines CRLF keeps diffs minimal; matching lines by content does not, empty lines collide), and check `git diff --stat` for whole-file diffs before handing over.
+- Every text file is LF since F11 (`.gitattributes`, guarded by `test_line_endings.py`); still check `git diff --stat` for whole-file diffs before handing over.
 - Playwright's `page.on('websocket')` does not fire for sockets answered by `page.routeWebSocket`; count mocked connections inside the route handler.
 - `page.clock` cannot stand in for a server heartbeat: fast-forwarding fires the client's stale timer before any real frame arrives. Shorten the real timings in the server config instead (`--app-set websocket.heartbeat_interval=...`).
 - Node 22's `node --test` does not search a directory argument; pass a quoted glob (`'tests/js/*.test.mjs'`).

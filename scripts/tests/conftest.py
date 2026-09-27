@@ -39,12 +39,21 @@ def run_python():
 
 
 @pytest.fixture(scope="session")
-def git_ignored():
-    """Return a predicate telling whether git ignores a project-relative path."""
+def git():
+    """Run git in the project root and return the CompletedProcess (text output).
+
+    Skips the requesting test outside a git checkout.
+    """
     if shutil.which("git") is None or not (BASE_DIR / ".git").exists():
         pytest.skip("not a git checkout")
 
-    def _ignored(rel_path: str) -> bool:
-        proc = subprocess.run(["git", "check-ignore", "-q", rel_path], cwd=BASE_DIR, timeout=_SUBPROCESS_TIMEOUT_S)
-        return proc.returncode == 0
-    return _ignored
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=BASE_DIR, capture_output=True, text=True,
+                              timeout=_SUBPROCESS_TIMEOUT_S)
+    return _git
+
+
+@pytest.fixture(scope="session")
+def git_ignored(git):
+    """Return a predicate telling whether git ignores a project-relative path."""
+    return lambda rel_path: git("check-ignore", "-q", rel_path).returncode == 0

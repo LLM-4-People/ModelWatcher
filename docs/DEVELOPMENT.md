@@ -156,6 +156,7 @@ Most tests are pure unit tests (extract_model_info, config validation, schema ch
 | `test_docs_commands.py` | Documented commands work as written: Python installs happen inside a virtualenv, scripts that import `backend` run in module form |
 | `test_error_logging.py` | No silent exception swallows in backend (no `except: pass`) |
 | `test_frontend_rules.py` | Frontend source rules: separators, status glyphs and test type labels have one home, config values have no fallbacks, only `conn.js` writes the connection dot and banner, paths and close codes come from the server, every JS `catch` logs or re-throws |
+| `test_line_endings.py` | Every tracked text file is stored and checked out with LF (`.gitattributes` `* text=auto eol=lf`) |
 | `test_pricing.py` | `extract_model_info()` pricing normalization (per-token, per-million, cents-per-million) |
 | `test_project_paths.py` | Only `backend/state.py` derives project paths from `__file__`; everything else imports them |
 | `test_rate_limits.py` | All rate limits come from config, none hardcoded |
