@@ -62,6 +62,12 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - The backend `except` rule now matches the frontend one and is enforced for every handler, with a keyed, documented control-flow allowlist.
 - Checked live on a private instance (8093): a rebinding `Host` got 400 and a refused WebSocket, client error reports answered 200, the preload list held all 20 static modules, three stylesheet misses logged once, and a config edit hot-reloaded with `MW_DISABLE_TESTS`.
 
+### Round 5 - tests and scripts group
+
+- F8, F24, F26, F29, F38, F39, F40, F42 and the pytest half of F43 fixed, with F30 (the joins the stricter separator guard caught) and the new F98 and F99. Each was reproduced first and each new test mutation-checked.
+- New shared pieces: `MW_DATA_DIR` in `state.py` (DB, VAPID keys, `FAVICON_DIR`, tiktoken cache), the seeder's `--server-env`, `pytest.ini`, the conftest `example_config_env` fixture and a private data dir per `run_python` child, `scripts/tests/app_child.py` (`emit`/`result`, `receive_until`), `_char_forms()` in the frontend rules, `TIER_DOT` and `_LOG_TAG_SEP` in `utils.js`.
+- Blocked: F17 and the `npm test` half of F43 both need a `package.json` edit, which the session's permission check refused; they wait for the user.
+
 ### Process notes
 
 - Every writer round ends with an independent read-only verifier that reproduces the original failures, mutation-checks the new tests and reviews the diff against the rules. Round 1 of this found a regression the writer's own tests missed, so the step stays.
@@ -78,3 +84,6 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - Starlette's `TestClient.websocket_connect` ignores `base_url` and always sends `Host: testserver`; pass an absolute `ws://host/...` URL when the Host matters. The real app only answers names that name it (F48), so tests against `backend.main` use `base_url="http://localhost"`.
 - SQLite's trace callback never sees a statement that fails to prepare, which is exactly the swallowed kind; record statements at `execute()` (a small proxy) to prove none is issued.
 - The register can grow while a round runs (F49 to F96 arrived during round 4). Edit it with targeted replacements on a fresh read, take the next free ID only after re-reading, and check `git diff` shows no lost lines.
+- A Playwright-mocked WebSocket opens only after its route handler returns; a close sent inside the handler arrives first, so the page never sees `open`. For "accepted, then closed" use `ws.connectToServer()` and close on the server's first frame. An `onClose` handler on the page side is called again when the server side closes.
+- Starlette's `TestClient` WebSocket `receive` has no timeout; read frames in a real-app child through `app_child.receive_until()` so a silent server fails an assertion instead of the 120 s subprocess timeout.
+- A mutation that breaks `DATA_DIR` makes children write into the checkout's `data/` (a `metrics.db` appeared and was removed). Never combine such a mutation with the seeder tests: the seeder deletes its DB name first, which in `data/` is the shared dev server's database.

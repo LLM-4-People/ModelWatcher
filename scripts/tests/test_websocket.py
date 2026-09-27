@@ -24,6 +24,7 @@ import backend.websocket as ws_module
 from backend.routes import module_preload_order
 from backend.state import CONFIG_DIR
 from backend.websocket import CLOSE_CODES, connection_config, is_allowed_origin, websocket_endpoint, ws_mgr
+from scripts.tests.app_child import result
 
 APP_EXAMPLE = yaml.safe_load((CONFIG_DIR / "app.yaml.example").read_text())
 WS_EXAMPLE = APP_EXAMPLE["websocket"]
@@ -33,6 +34,9 @@ SAME_ORIGIN = "http://testserver"
 # The real app only answers Host names that name it (F48); localhost always does
 LOCAL_ORIGIN = "http://localhost"
 OTHER_ORIGIN = "https://elsewhere.example.org"
+# Real-app child: heartbeat period, and the deadline for a hello plus two heartbeats
+HEARTBEAT_S = 0.2
+FRAMES_DEADLINE_S = 5
 
 
 @pytest.fixture
@@ -210,15 +214,17 @@ def test_close_all_tells_a_gone_client_from_a_failure(ws_config, monkeypatch, ca
     assert ws_mgr.connections == []
 
 
-def test_real_app_with_tests_disabled(run_python, tmp_path):
+def test_real_app_with_tests_disabled(run_python, example_config_env, tmp_path):
     """Boot backend.main with the shipped example configs and MW_DISABLE_TESTS=1, as DEVELOPMENT.md does.
 
     Covers the whole chain the browser sees: the bootstrap config, the hello frame,
     heartbeats on a server that runs no tests, liveness vs readiness, and the Host
     check (F48): the page is served as http://localhost, a rebinding name gets 400.
+    Frames are read with a deadline (F42), so missing heartbeats fail the assertion
+    below within a few heartbeat periods instead of hanging until the subprocess timeout.
     """
     cfg = copy.deepcopy(APP_EXAMPLE)
-    cfg["websocket"]["heartbeat_interval"] = 0.2
+    cfg["websocket"]["heartbeat_interval"] = HEARTBEAT_S
     cfg["websocket"]["stale_after"] = 1
     cfg["app"]["log_level"] = "info"
     app_yaml = tmp_path / "app.yaml"
@@ -228,6 +234,7 @@ def test_real_app_with_tests_disabled(run_python, tmp_path):
         "from starlette.testclient import TestClient\n"
         "import backend.state as st\n"
         "from backend.main import app, _OUTBOUND_TASKS\n"
+        "from scripts.tests.app_child import emit, receive_until\n"
         f"with TestClient(app, base_url={LOCAL_ORIGIN!r}) as client:\n"
         "    out = {'live': client.get(st.LIVENESS_PATH).status_code, 'ready': client.get('/health').status_code,\n"
         "           'foreign_host': client.get(st.LIVENESS_PATH, headers={'host': 'rebind.example.org'}).status_code,\n"
@@ -236,26 +243,23 @@ def test_real_app_with_tests_disabled(run_python, tmp_path):
         "    out['preloads'] = re.findall(r'rel=\"modulepreload\" href=\"[^\"]*?/(js/[^\"?]+)', page)\n"
         "    out['boot'] = json.loads(page.split('window.__MW_CONN__=', 1)[1].split('</script>', 1)[0])\n"
         f"    with client.websocket_connect('ws://localhost' + st.WS_PATH, headers={{'origin': {LOCAL_ORIGIN!r}}}) as ws:\n"
-        "        out['frames'] = [ws.receive_json() for _ in range(3)]\n"
-        "print('RESULT ' + json.dumps(out))\n"
+        f"        out['frames'] = receive_until(ws, lambda f: len(f) >= 3, {FRAMES_DEADLINE_S})\n"
+        "emit(out)\n"
     )
-    proc = run_python("-c", code, env={
-        "MW_APP_YAML": str(app_yaml), "MW_MODELS_YAML": "models.yaml.example",
-        "MW_AUDITS_YAML": "audits.yaml.example", "MW_DB_NAME": str(tmp_path / "metrics.db"),
-        "MW_DISABLE_TESTS": "1",
-    })
-    out = json.loads(proc.stdout.split("RESULT ", 1)[1])
+    proc = run_python("-c", code, env={**example_config_env, "MW_APP_YAML": str(app_yaml), "MW_DISABLE_TESTS": "1"})
+    out = result(proc)
     assert out["live"] == 200
     assert out["ready"] == 503, "readiness stays 503 without a scheduler; liveness must not follow it"
     assert out["foreign_host"] == 400
     assert out["preloads"] == module_preload_order(), "the page preloads the derived module list (F36)"
-    hello, *rest = out["frames"]
-    assert hello["type"] == "hello"
+    assert [f["type"] for f in out["frames"]] == ["hello", "heartbeat", "heartbeat"], \
+        f"expected a hello and two heartbeats within {FRAMES_DEADLINE_S}s"
+    hello = out["frames"][0]
     assert hello["config"] == out["boot"]
     assert out["boot"]["stale_after"] == 1
     assert out["boot"]["reconnect"] == cfg["websocket"]["reconnect"]
     assert out["boot"]["unreachable"] == cfg["websocket"]["unreachable"]
     assert out["boot"]["close_codes"] == CLOSE_CODES
-    assert [f["type"] for f in rest] == ["heartbeat", "heartbeat"]
     assert "scheduler" in out["test_tasks"]
     assert f"MW_DISABLE_TESTS set - not starting: {', '.join(out['test_tasks'])}" in proc.stderr
+

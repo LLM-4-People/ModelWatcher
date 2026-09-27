@@ -109,7 +109,7 @@ def test_rejections_warn_once(hosts, caplog):
     assert "server.allowed_hosts" in caplog.records[0].getMessage()
 
 
-def test_example_config_accepts_its_site_url_host(run_python):
+def test_example_config_accepts_its_site_url_host(run_python, example_config_env):
     """app.yaml.example loads into the names the middleware reads."""
     code = (
         "import json\n"
@@ -118,8 +118,5 @@ def test_example_config_accepts_its_site_url_host(run_python):
         "reload_config()\n"
         "print(json.dumps([st.c.site_host, list(st.c.allowed_hosts)]))\n"
     )
-    out = run_python("-c", code, env={
-        "MW_APP_YAML": "app.yaml.example", "MW_MODELS_YAML": "models.yaml.example",
-        "MW_AUDITS_YAML": "audits.yaml.example",
-    }).stdout.strip().splitlines()[-1]
+    out = run_python("-c", code, env=example_config_env).stdout.strip().splitlines()[-1]
     assert json.loads(out) == ["your-domain.example.com", []]

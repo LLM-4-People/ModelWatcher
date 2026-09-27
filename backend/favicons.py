@@ -24,8 +24,8 @@ from publicsuffixlist import PublicSuffixList
 
 import backend.state as st
 import backend.db as db
+from backend.state import FAVICON_DIR
 
-FAVICON_DIR = st.DATA_DIR / "favicons"
 FAVICON_DIR.mkdir(exist_ok=True)
 
 _MAX_ICON_BYTES = 500_000

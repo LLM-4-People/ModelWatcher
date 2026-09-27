@@ -14,7 +14,7 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 | F5 | backend/frontend | Header shows a red connection dot and a "Server unreachable - retrying automatically" banner against a healthy local server | medium | fixed |
 | F6 | frontend | Model modal header renders `Bench 5h 2m ·OK10h 1m` with a missing space and inconsistent separator | low | fixed |
 | F7 | docs | DEVELOPMENT.md installs Python dependencies into the system interpreter; on Debian-patched Python `http-ece` fails to build (`install_layout`), a virtualenv avoids it | low | fixed |
-| F8 | tests | `test_api_errors.py` calls the production host `https://stats.ai4fun.dev`, so 6 tests fail offline and the suite checks a remote deployment instead of the checked-out code | medium | open |
+| F8 | tests | `test_api_errors.py` calls the production host `https://stats.ai4fun.dev`, so 6 tests fail offline and the suite checks a remote deployment instead of the checked-out code | medium | fixed |
 | F9 | docker | `COPY config/ config/` in the Dockerfile bakes the build host's local `config/*.yaml` (gitignored, may hold inline keys) into image layers; the later `COPY config/*.example config/` is redundant | medium | fixed |
 | F10 | scripts | `_check_imports.py` ranks modules with a hand-kept `CHAIN` that misses `audit`, `db_probe`, `db_push`, `migrations` and others and still lists the removed `ping`, so it reports false violations | low | fixed |
 | F11 | repo | Mixed CRLF/LF line endings in 8 tracked files; any edit that normalises them turns into a whole-file diff | low | fixed |
@@ -30,13 +30,13 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 | F21 | backend | `config.py` hand-writes 35 "is required" checks, 24 of them the same `for key in ...: if key not in ...` loop | low | fixed |
 | F22 | frontend | `state.js` seeds `statusValues`, `testTypes` and `chartViews` with copies of backend constants that `/api/config` later overwrites | low | open |
 | F23 | backend | Regression from the F5 fix: a malformed `Origin` header (`http://[`) raised inside `is_allowed_origin()`, so the WebSocket died with 1006 and two error tracebacks instead of a clean 1008 | medium | fixed |
-| F24 | tests | closingSocket() closes the routed WebSocket inside the route handler, so the page's socket never fires onopen | medium | open |
+| F24 | tests | closingSocket() closes the routed WebSocket inside the route handler, so the page's socket never fires onopen | medium | fixed |
 | F25 | frontend | No timeout for a socket that is accepted but never sends hello | medium | open |
-| F26 | tests | Stale detection is untested | medium | open |
+| F26 | tests | Stale detection is untested | medium | fixed |
 | F27 | frontend | Phone-width regression in the modal error box | medium | open |
 | F28 | frontend | Modal title vertical misalignment introduced by .seg-list {align-items: baseline} | low | open |
-| F29 | tests | Static guard holes, confirmed by mutation | low | open |
-| F30 | frontend | Separators on the same code path are still built by hand with em dashes: _statusMessage joins retry and error with ' - ' (dom.js:148), and format.js:394 does the same | low | open |
+| F29 | tests | Static guard holes, confirmed by mutation | low | fixed |
+| F30 | frontend | Separators on the same code path are still built by hand with em dashes: _statusMessage joins retry and error with ' - ' (dom.js:148), and format.js:394 does the same | low | fixed |
 | F31 | frontend | The claim 'spaces keep copied text readable' does not hold in a browser | low | open |
 | F32 | frontend | The frontend depends on window.__MW_CONN__ and has no guard | low | open |
 | F33 | frontend | _probeWhileDown() runs probeBackend().then(...) without .catch, and it re-arms itself inside the .then callback | low | open |
@@ -44,11 +44,11 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 | F35 | frontend | The F14 rule is not enforced outside frontend/js: sw.js has 4 catches that swallow or only console.error (lines 25, 54, 75, 83), and the inline FOUC script built in backend/routes.py:403 has `catch(e){}` | low | open |
 | F36 | backend | conn.js is missing from _MODULE_PRELOAD_ORDER although api.js, ws.js and help.js import it on the startup path, so the browser finds it one round trip later | low | fixed |
 | F37 | docs | The endpoint count is stale after adding /health/live: API.md:3 and README.md:13 and README.md:80 say '15 REST endpoints', but there are now 16 (16 '### GET/POST/...' sections, 16 routes) | low | fixed |
-| F38 | tests | --app-template and --app-set are applied only after the DB is seeded (minutes for the default 5000 models) and after models YAML is written | low | open |
-| F39 | tests | F15 is incomplete | low | open |
-| F40 | docs | The claim that browser tests 'never touch data/, config/ or a running instance' is false on a fresh clone | low | open |
+| F38 | tests | --app-template and --app-set are applied only after the DB is seeded (minutes for the default 5000 models) and after models YAML is written | low | fixed |
+| F39 | tests | F15 is incomplete | low | fixed |
+| F40 | docs | The claim that browser tests 'never touch data/, config/ or a running instance' is false on a fresh clone | low | fixed |
 | F41 | backend | Results computed without an encoder are indistinguishable | low | fixed |
-| F42 | tests | When heartbeats are missing, test_real_app_with_tests_disabled blocks in ws.receive_json() until conftest's 120s subprocess timeout | low | open |
+| F42 | tests | When heartbeats are missing, test_real_app_with_tests_disabled blocks in ws.receive_json() until conftest's 120s subprocess timeout | low | fixed |
 | F43 | package.json | `npm test` is `pytest && npm run test:js` | low | open |
 | F44 | backend | built_css() calls log_error with a full FileNotFoundError traceback on every stylesheet request while the file is missing, which is every page load | low | fixed |
 | F45 | backend | MODEL_KEY_SEP is a single source only for the backend | low | open |
@@ -104,6 +104,8 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 | F95 | frontend | Score chips render "C 74 %" with a gap before the unit, and a stable trend as "±", which reads as uncertainty | low | deferred-to-redesign |
 | F96 | frontend | At 390 px the Scores filter's last bucket ("≤19%") sits past the viewport edge in a scroller whose scrollbar is hidden | low | open |
 | F97 | backend | Config paths were resolved in three places: `MW_*_YAML` overrides were honoured when loading, but the watcher watched `config/` and the `reset_epoch` rewrite edited `config/models.yaml`, so overrides outside `config/` never hot-reloaded and their `reset_epoch` was re-applied on every reload | low | fixed |
+| F98 | frontend | The browser notification title and the toast's aria-label join provider, model and event with a hand-built `' - '`, outside `SEP_TEXT`, and build the same string twice | low | fixed |
+| F99 | docs | `.env.example` says `MW_DISABLE_TESTS` skips the config watcher, which runs in every mode since F46, and leaves out the token encoder it does skip | low | fixed |
 
 ## Details
 
@@ -177,6 +179,8 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Reproduce: `python -m pytest scripts/tests/test_api_errors.py` without access to `stats.ai4fun.dev` fails 6 tests with `URLError: Tunnel connection failed: 403 Forbidden`.
 - Root cause: `BASE = "https://stats.ai4fun.dev"` is hard-coded, so these tests check whatever that deployment runs, not this checkout.
 - Proposed fix: exercise the routes in-process (FastAPI `TestClient`) with the example configs, as `test_config_examples.py` already loads them.
+- Fix: `test_api_errors.py` runs the checked-out `backend.main` in a child (`run_python`, the `example_config_env` fixture, `MW_DISABLE_TESTS`, a private data dir) and sends one request per layer that answers with an error: handler 400s, query and body validation 422s, router 404 and 405, and the Host (400) and body-size (413) middleware. Each answer must be `application/json` with `error` as its only key. The case table is passed to the child, which reports through `app_child.emit()`.
+- Tests: `test_api_errors.py` (10 cases). Reproduced first: 6 failures with `URLError: Tunnel connection failed: 403`. Mutation-checked: without the `RequestValidationError` and `StarletteHTTPException` handlers the five validation, 404 and 405 cases fail; a `detail` key in the middleware answers fails the two middleware cases.
 
 ### F9 - local configs copied into the Docker image
 
@@ -239,6 +243,7 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 
 - Reproduce: `npm run perf` fails with `Cannot find module tests/perf-test.mjs`; the same for `perf:*`, `stress*`. DEVELOPMENT.md says the scripts are maintained separately.
 - Proposed fix: remove the scripts and their tool dependencies (`autocannon`, `lighthouse`) or add the scripts; either way add a test that every npm script's file exists (`test_frontend_rules.py` already checks the test scripts).
+- Status (tests-scripts round): reproduced (`npm run perf` fails with `Cannot find module`), not fixed. The fix is an edit to `package.json` (drop the eight `perf*`/`stress*` scripts and `autocannon`/`lighthouse`, then the DEVELOPMENT.md section and the CONTRIBUTING line that mention them), and the session's permission check refused that edit, so it waits for the user's approval.
 
 ### F18 - readiness log on every request
 
@@ -282,6 +287,9 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: closingSocket() closes the routed WebSocket inside the route handler, so the page's socket never fires onopen. Verified: the mock gives [close 1013], while a real accept-then-close gives [open, close]. The original F5 failure mode (accept, onopen resets the backoff, server closes) is therefore not reproduced. Re-adding _resetBackoff() in ws.onopen passes the whole suite (mutation missed).
 - Proposed fix: Let the mocked socket open before closing it (close on a later tick, or after the client's first message), or run the busy and rejected cases against the real server (--app-set server.max_connections=0, or a page origin outside the allowlist) so onopen fires. Keep the growing-backoff assertion.
+- Root cause: Playwright's mocked socket opens only after the route handler returns (or on the first frame sent to the page); a close issued inside the handler reaches the page first. The real-server alternatives do not work: `server.max_connections` must be at least 1 and also caps HTTP requests, and the page always connects to its own origin, which the server always accepts.
+- Fix: `closingSocket()` connects every routed socket to the real server with `connectToServer()`, so the page's socket really opens, drops the server's first frame (its hello) and closes the page side with the busy or policy code, which is what a busy or rejecting server does after its accept.
+- Tests: `tests/e2e/connection.test.mjs` (busy backoff and rejected pacing). Mutation-checked: `_resetBackoff()` in `ws.onopen` now fails the busy case (`backoff did not grow: 428,408,408,...`).
 
 ### F25 - verifier round 1 (frontend/js/ws.js)
 
@@ -294,6 +302,8 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: Stale detection is untested. Removing ws.close(...) from _armStale passes pytest, the JS tests and every e2e test (mutation missed). Live verification shows it currently works: hello then silence gives 3 sockets in 5s with stale_after=2.
 - Proposed fix: Add an e2e case in which a routed socket sends one hello and then goes silent, and assert a new socket within stale_after plus the reconnect delay.
+- Fix: `silentAfterHello()` routes each socket to the real server and passes on only its hello. The new case asserts the page closes that socket with `close_codes.stale`, no sooner than `stale_after`, opens a replacement within `stale_after + reconnect.min_delay` (plus slack), and shows no banner.
+- Tests: `tests/e2e/connection.test.mjs` ("a socket that goes silent after its hello is closed as stale and replaced"). Mutation-checked: without `ws.close(...)` in `_armStale` it times out waiting for the replacement.
 
 ### F27 - verifier round 1 (frontend/js/modal.js)
 
@@ -312,12 +322,16 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: Static guard holes, confirmed by mutation. (1) The readiness-path guard needs a quote right before /health, so the exact original RTT form fetch(`${location.origin}/health`) passes; only e2e test 5 catches it. (2) The glyph guard misses the escaped ▲ (the old degraded triangle) and has no ● (U+25CF, the old ok/unknown check-line glyph) in literal or escaped form. (3) The separator guard ignores em-dash separators, and an added ' - ' separator passes. (4) The fallback guard misses aliased fallbacks (const bi = state.benchmarkInterval; bi || 3600).
 - Proposed fix: Match /health\b(?!/live) regardless of the preceding character. Build the glyph pattern from every codepoint that has been used (2713, 2717, 2715, 26a0, 25cb, 25b2, 25cf, in literal and \u forms). Include -/- joiners in the separator guard. Accept that regex guards cannot catch aliasing and rely on e2e for it.
+- Fix: `test_frontend_rules.py` builds character patterns with one helper, `_char_forms()` (literal, `\uXXXX`, `\u{X}`, `&#x..;`, `&#..;`). (1) Server paths match `/health` and `/ws` after any character, `/health/live` included (it comes from `state.conn.liveness_path` too). (2) Status glyphs cover all seven codepoints; the tier-legend bullet, the only other `\u25cf`, got a named home (`TIER_DOT` in `utils.js`, drawn by one `_tierDotHTML()` in `format.js`). (3) The separator guard flags any string literal that is only an em or en dash (every spelling) or a spaced hyphen; the log-tag joiner is the named `_LOG_TAG_SEP`, and the offending joins were fixed (F30, F98). (4) The fallback guard follows local aliases and destructuring of the config-derived state fields, read from `applyConfig()`. Dashes inside longer text, such as the capability tip's `${label} \u2014 ${desc}`, are prose rather than joiners and stay with F79's guard.
+- Tests: `test_frontend_rules.py`, plus `test_fallback_scanner_follows_aliases` for the scanner itself. Mutation-checked with the verifier's four cases: ``fetch(`${location.origin}/health`)``, `'\u25b2'` and `'●'` in a status map, `.join(' \u2014 ')` and `.join(' - ')`, and `const bi = state.benchmarkInterval; bi || 3600` each fail their guard.
 
 ### F30 - verifier round 1 (frontend/js/dom.js)
 
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: Separators on the same code path are still built by hand with em dashes: _statusMessage joins retry and error with ' - ' (dom.js:148), and format.js:394 does the same. Both render inside the modal error box next to the new SEP dot. This contradicts the claim of one separator primitive, and CONTRIBUTING bans em dashes.
 - Proposed fix: Route these joins through SEP_TEXT or a named separator in utils.js and extend the separator guard to em and en dash joiners.
+- Fix (with F29): `_statusMessage()` and `recordErrorText()` join with `SEP_TEXT`; the separator guard now flags dash joiners in every spelling.
+- Tests: `test_frontend_rules.py::test_separators_come_from_the_shared_primitive`. Mutation-checked: restoring either `' \u2014 '` join fails it.
 
 ### F31 - verifier round 1 (frontend/js/utils.js)
 
@@ -370,18 +384,24 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: --app-template and --app-set are applied only after the DB is seeded (minutes for the default 5000 models) and after models YAML is written. A bad value leaves partial output (verified: DB plus models YAML, no app YAML). A nested unknown key (--app-set nosuch.key=1) raises a bare KeyError: 'nosuch', because only the leaf is checked. Errors surface as tracebacks, not argparse errors.
 - Proposed fix: Load the template and apply the overrides first (checking every path segment), fail through ap.error(), then seed and write.
+- Fix: `_app_config()` builds the generated app config before anything is seeded: the scaled benchmark interval and stagger go through the same path check as `--app-set` (every segment must exist and lead to a mapping), and the result passes `config._validate_config()`. Any failure, an unreadable template or a value that is not YAML included, is an `ap.error()` (exit 2, one line, no traceback) and nothing is written.
+- Tests: `test_scale_test_db.py::test_bad_app_override_fails_before_any_output` (a misspelt leaf, an unknown top-level key, a path through a scalar, an invalid value: exit 2, message, no config dir, no DB). Mutation-checked: validating after seeding fails all four; the old leaf-only check fails the two nested cases.
 
 ### F39 - verifier round 1 (scripts/util/scale_test_db.py)
 
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: F15 is incomplete. Favicons go to <--data-dir>/favicons, but the server always reads st.DATA_DIR/favicons (FAVICON_DIR is not overridable). An out-of-tree run, including the e2e harness, therefore has no provider logos, while the printed start command implies a fully isolated setup.
 - Proposed fix: Make the data dir overridable at one choke point (e.g. MW_DATA_DIR in state.py, from which FAVICON_DIR, VAPID and TIKTOKEN derive), or state in the seeder output that favicons are only served from data/.
+- Fix: `state.DATA_DIR` honours `MW_DATA_DIR` (a name inside the project or an absolute path, created if missing); the DB, VAPID key files, `FAVICON_DIR` (moved into `state.py`) and the tiktoken cache derive from it. The seeder has no `--data-dir` of its own any more: it writes the DB and favicons to `st.DATA_DIR` and `st.FAVICON_DIR`, exactly the paths the server reads, and `--server-env PATH` writes the environment that starts a server on its output (the logged start command prints the same variables). The browser-test harness seeds with a temp `MW_DATA_DIR` and starts the server on that JSON instead of repeating the seeder's file names.
+- Tests: `test_project_paths.py::test_everything_the_server_writes_follows_the_data_dir` (default and absolute), `test_scale_test_db.py::test_server_env_points_the_server_at_the_output` and `::test_server_on_the_seeded_env_serves_every_logo` (a real app on the seeded env returns a logo for every provider). Mutation-checked: a fixed `FAVICON_DIR` fails the path test; seeding favicons anywhere else fails the logo test.
 
 ### F40 - verifier round 1 (docs/DEVELOPMENT.md)
 
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: The claim that browser tests 'never touch data/, config/ or a running instance' is false on a fresh clone. Startup loads or generates VAPID keys in the fixed st.DATA_DIR: the HEAD scratch server logged 'Generated new VAPID key pair at .../data/vapid_private.pem', and the new server loaded the repo data/ keys while its DB pointed elsewhere. test_real_app_with_tests_disabled does the same.
 - Proposed fix: Same fix as the favicon item (an overridable data dir) and point it at the temp dir in the harness and fixture, or reword the doc.
+- Fix: the F39 data dir. `run_python` scrubs an inherited `MW_DATA_DIR` and gives every child a fresh one (a test can pass its own; empty means `data/`), and the browser-test harness runs the seeder and the server on one temp data dir, so DEVELOPMENT.md's claim now holds.
+- Tests: `test_project_paths.py::test_real_app_writes_only_into_its_data_dir` (startup writes the DB, the VAPID pair and the favicon dir into `MW_DATA_DIR`). Mutation-checked: a fixed `DATA_DIR` fails it. Checked live: after the browser tests the checkout's `data/` had no new or changed file.
 
 ### F41 - verifier round 1 (backend/streaming.py)
 
@@ -396,12 +416,18 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: When heartbeats are missing, test_real_app_with_tests_disabled blocks in ws.receive_json() until conftest's 120s subprocess timeout. The mutation is caught, but only after 2 minutes and with a timeout message instead of an assertion.
 - Proposed fix: Bound the child's receives (a thread with join(timeout), or a short socket timeout) and assert on the frames received.
+- Also found: `test_config_reload.py`'s child had the same unbounded wait; its deadline loop relied on heartbeats to return from each receive.
+- Fix: `scripts/tests/app_child.py` holds the helpers for real-app children: `receive_until(ws, done, seconds)` reads frames on a daemon thread and returns what arrived by the deadline (a server close or leaving the socket's context ends the reader), `emit()`/`result()` replace the hand-written `RESULT` printing and parsing in five test files. Both children now assert on the frames they got.
+- Tests: `test_websocket.py::test_real_app_with_tests_disabled`, `test_config_reload.py`. Mutation-checked: without `ws_mgr.start_heartbeat()` the websocket case fails in 6 s with "expected a hello and two heartbeats within 5s" (was a 120 s subprocess timeout); without the heartbeat and the config watcher the reload case fails at its 20 s deadline with "no reload within 20s".
 
 ### F43 - verifier round 1 (package.json)
 
 - Found by: independent verifier after the F1-F7 fixes.
 - Issue: `npm test` is `pytest && npm run test:js`. While F8 fails offline, the JS unit tests never run through the documented entry point, and `npm test` exits non-zero. Separately, bare `pytest scripts/tests` now fails at conftest import (ModuleNotFoundError: backend); HEAD failed for 4 modules, now the whole session does. Only `python -m pytest` works.
 - Proposed fix: Fix F8 (in-process TestClient). Add a pytest config with pythonpath = . so that bare pytest works too.
+- Fix (pytest part): `pytest.ini` sets `pythonpath = .` and `testpaths = scripts/tests` (whitelisted in `.gitignore`), so `pytest` works from any directory; F8 no longer fails offline, so `npm test` reaches the JS tests again.
+- Tests: `test_docs_commands.py::test_bare_pytest_imports_the_project` (collects a test module with `python -P`, which, like the `pytest` entry point, leaves the working directory off `sys.path`). Mutation-checked: without `pytest.ini` it fails with `No module named 'backend'`.
+- Still open: `npm test` still stops at the first failing suite. The fix is a `package.json` edit (a small runner that runs every suite and reports each result, with `test:py` next to `test:js`); the session's permission check refused that edit, so it waits for the user's approval.
 
 ### F44 - verifier round 1 (backend/routes.py)
 
@@ -836,3 +862,17 @@ Status values: `open`, `investigating`, `fixed`, `deferred-to-redesign` (resolve
 - Root cause: `_load_yaml` knew the `MW_*_YAML` overrides; the watcher and the rewrite hardcoded `CONFIG_DIR`.
 - Fix: `config.config_path(name)` is the one resolver; loading, the watcher (the directories of the files in use, filtered to exactly those files) and the `reset_epoch` rewrite all use it. `st.Change`, which only the old filter used, is gone.
 - Tests: `test_config_reload.py` (an override in a temp dir hot-reloads, its `reset_epoch` is stripped at startup; `config_path` follows names and absolute paths). Mutation-checked: watching `config/` or rewriting `config/models.yaml` each fail.
+
+### F98 - notification titles joined by hand
+
+- Found by: the tests-scripts round, when the F29 separator guard learnt spaced-hyphen joiners.
+- Reproduce: `grep -n "join(' - ')" frontend/js/notifications.js` finds the browser notification title (`:277`) and the toast `aria-label` (`:296`), the same string built twice.
+- Root cause: both predate `SEP_TEXT`, and the separator guard only looked for the middle dot.
+- Fix: one `_notifTitle(provider, model, notif)` joins with `SEP_TEXT` for both.
+- Tests: `test_frontend_rules.py::test_separators_come_from_the_shared_primitive`. Mutation-checked: a `' - '` join fails it.
+
+### F99 - stale `MW_DISABLE_TESTS` comment in `.env.example`
+
+- Found by: the tests-scripts round, while documenting `MW_DATA_DIR` there.
+- Issue: the comment lists the config watcher among the skipped tasks, which F46 moved out of them, and leaves out the token encoder download, which is skipped.
+- Fix: the comment names what `_OUTBOUND_TASKS` holds.

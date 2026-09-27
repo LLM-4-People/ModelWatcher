@@ -1,12 +1,13 @@
 // Shared setup for the browser tests: a private server seeded with scale-test data, and Chromium.
-// Each server gets its own temp data/config dir and a free port, runs with MW_DISABLE_TESTS=1
-// (as DEVELOPMENT.md does) and fast connection timings, so the specs never touch a shared
-// instance or the checked-out data/ and config/. Run through `npm run test:e2e`.
+// Each server gets its own temp dir (MW_DATA_DIR for the DB, favicons and VAPID keys, plus the
+// generated configs) and a free port, runs with MW_DISABLE_TESTS=1 (as DEVELOPMENT.md does) and
+// fast connection timings, so the specs never touch a shared instance or the checked-out data/
+// and config/. The seeder hands over the server env for its output. Run through `npm run test:e2e`.
 //
 // Environment: python3 on PATH must have the project requirements (activate the virtualenv);
 // MW_E2E_CHROMIUM points Playwright at a Chromium binary when its own download is not installed.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,18 +55,17 @@ async function waitServing(url, proc, log) {
 
 export async function startServer(overrides = FAST_CONN) {
   const dir = mkdtempSync(join(tmpdir(), 'mw-e2e-'));
+  const serverEnvFile = join(dir, 'server-env.json');
   // No code reload: the harness owns exactly one server process
   const sets = Object.entries({ 'app.debug': false, ...overrides }).flatMap(([k, v]) => ['--app-set', `${k}=${v}`]);
-  const seed = spawnSync('python3', ['-m', 'scripts.util.scale_test_db', ...SEED_ARGS, '--data-dir', dir, '--config-dir', dir,
-    '--app-template', join(ROOT, 'config', 'app.yaml.example'), ...sets], { cwd: ROOT, encoding: 'utf8' });
+  const seed = spawnSync('python3', ['-m', 'scripts.util.scale_test_db', ...SEED_ARGS, '--config-dir', dir,
+    '--server-env', serverEnvFile, '--app-template', join(ROOT, 'config', 'app.yaml.example'), ...sets],
+    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, MW_DATA_DIR: join(dir, 'data') } });
   if (seed.status !== 0) throw new Error(`seeding failed:\n${seed.stderr}`);
   const port = await freePort();
   const env = {
     ...process.env,
-    MW_DB_NAME: join(dir, 'metrics-scale-test.db'),
-    MW_MODELS_YAML: join(dir, 'models-scale-test.yaml'),
-    MW_APP_YAML: join(dir, 'app-scale-test.yaml'),
-    MW_SCALE_TEST_KEY: 'dummy',
+    ...JSON.parse(readFileSync(serverEnvFile, 'utf8')),
     MW_DISABLE_TESTS: '1',
     HOST: '127.0.0.1',
     PORT: String(port),

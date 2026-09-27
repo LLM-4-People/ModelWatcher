@@ -4,6 +4,8 @@
 
 // One glyph per outcome, for every status mark the UI draws (check line, badges, history, notifications)
 export const STATUS_GLYPH = { ok: '\u2713', degraded: '\u26a0', failed: '\u2717', unknown: '\u25cb' };
+// The coloured bullet before a tier boundary or a critical metric; a colour key, not a status mark
+export const TIER_DOT = '\u25cf';
 
 // Separator glyphs. Rendered lists use sepHTML() inside segmentsHTML(); plain text
 // (tooltips, aria-label, title, copied text) joins with SEP_TEXT.
@@ -149,8 +151,11 @@ export function setClass(el, cls) {
   if (el && el.className !== cls) el.className = cls;
 }
 
+// Log lines only; rendered text joins with SEP_TEXT
+const _LOG_TAG_SEP = ' - ';
+
 export function logTag(comp, dir, type, ...rest) {
-  return `${comp} ${dir} ${type}${rest.filter(Boolean).map(s => ' - ' + s).join('')}`;
+  return `${comp} ${dir} ${type}${rest.filter(Boolean).map(s => _LOG_TAG_SEP + s).join('')}`;
 }
 
 export function slug(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }

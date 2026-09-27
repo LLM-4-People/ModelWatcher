@@ -30,6 +30,7 @@
 !docs/**/*.*
 !requirements.txt
 !requirements-dev.txt
+!pytest.ini
 !package.json
 !.gitignore
 !.gitattributes

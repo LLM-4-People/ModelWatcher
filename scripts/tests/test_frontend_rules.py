@@ -7,7 +7,9 @@ Catches the source-level patterns behind findings F5 and F6, so they cannot cree
 - F6: 19 hand-built separators with 3 spellings and 5 spacings, status glyphs that drifted
   (degraded was a triangle in one place and a warning sign elsewhere), test type labels typed in
   three places, and interval fallbacks that silently disagreed with app.yaml.
-Also enforces the CONTRIBUTING rule that every JS catch logs or re-throws.
+Also enforces the CONTRIBUTING rule that every JS catch logs or re-throws. F29: the guards
+missed forms the old code had used (an escaped triangle, the dot glyph, a path after `${...}`,
+em-dash and ' - ' joiners, a fallback on an alias), so each now matches every spelling.
 """
 import ast
 import json
@@ -29,6 +31,14 @@ def _code_lines(path):
             yield n, line
 
 
+def _char_forms(codepoints) -> str:
+    """Regex matching any of the characters as written in JS or HTML: literal, \\uXXXX, \\u{X}, &#x..; or &#..;."""
+    forms = []
+    for cp in codepoints:
+        forms += [re.escape(chr(cp)), rf"\\u{cp:04x}", rf"\\u\{{0*{cp:x}\}}", rf"&#x0*{cp:x};", rf"&#0*{cp};"]
+    return "(?i:" + "|".join(forms) + ")"
+
+
 def _hits(pattern, allowed=()):
     """Lines matching pattern outside the allowed (file name, line regex) homes."""
     rx = re.compile(pattern)
@@ -42,10 +52,15 @@ def _hits(pattern, allowed=()):
 
 # ── F6: separators, glyphs, labels, config fallbacks ────────────────────────
 
+# A string literal that is only a dash (em or en in any spelling, or a spaced hyphen): a hand-built joiner
+_DASH_JOINER = rf"""(['"`])(?:\s*(?:{_char_forms((0x2014, 0x2013))}|&[mn]dash;)\s*|\s+-\s+)\1"""
+
+
 def test_separators_come_from_the_shared_primitive():
-    found = _hits(r"·|\\u00b7|&middot;|score-sep|kv-sep", allowed=[
+    found = _hits(rf"{_char_forms((0xB7,))}|&middot;|score-sep|kv-sep|{_DASH_JOINER}", allowed=[
         ("utils.js", r"^export const SEP = "),
         ("utils.js", r"^const _KV_SEP = "),
+        ("utils.js", r"^const _LOG_TAG_SEP = "),
     ])
     assert not found, "build separators with sepHTML/segmentsHTML/SEP_TEXT/kvSep (utils.js):\n" + "\n".join(found)
 
@@ -55,11 +70,17 @@ def test_removed_separator_styles_stay_removed():
         assert cls not in INDEX_HTML
 
 
+# Every codepoint a status mark has used: STATUS_GLYPH today, the old ok/unknown dot and degraded triangle
+_STATUS_CODEPOINTS = (0x2713, 0x2717, 0x2715, 0x26A0, 0x25CB, 0x25CF, 0x25B2)
+
+
 def test_status_glyphs_have_one_home():
-    found = _hits(r"[✓✗✕⚠○▲]|\\u(2713|2717|2715|26a0|25cb)", allowed=[("utils.js", r"^export const STATUS_GLYPH = ")])
-    # The sort-direction arrow in the history table is not a status glyph
-    found = [f for f in found if not re.search(r"_sortDir === 'desc'", f)]
-    assert not found, "use STATUS_GLYPH (utils.js):\n" + "\n".join(found)
+    found = _hits(_char_forms(_STATUS_CODEPOINTS), allowed=[
+        ("utils.js", r"^export const (STATUS_GLYPH|TIER_DOT) = "),
+        # The sort-direction arrow in the history table is not a status glyph
+        ("modal-history.js", r"_sortDir === 'desc'"),
+    ])
+    assert not found, "use STATUS_GLYPH or TIER_DOT (utils.js):\n" + "\n".join(found)
 
 
 def test_test_type_labels_are_not_hardcoded():
@@ -67,17 +88,54 @@ def test_test_type_labels_are_not_hardcoded():
     assert not found, "read test type labels through testTypeLabel() (format.js):\n" + "\n".join(found)
 
 
+def _config_state_keys() -> list[str]:
+    """State fields applyConfig() fills from the server's interval and enabled settings."""
+    keys = re.findall(r"state\.(\w+) = cfg\.\w+_(?:seconds|enabled)\b", (JS_DIR / "state.js").read_text())
+    assert keys, "applyConfig no longer maps *_seconds/*_enabled fields"
+    return keys
+
+
+def _config_fallbacks(path, keys) -> list[str]:
+    """`||`/`??` after a config-derived state field, read directly or through a local alias."""
+    lines = list(_code_lines(path))
+    field = rf"state\.(?:{'|'.join(keys)})\b"
+    aliases = set()
+    for _, line in lines:
+        aliases.update(re.findall(rf"\b(?:const|let|var)\s+(\w+)\s*=\s*{field}(?!\s*(?:\|\||\?\?))", line))
+        for group in re.findall(r"\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*state\b", line):
+            for key, alias in re.findall(r"(\w+)(?:\s*:\s*(\w+))?", group):
+                if key in keys:
+                    aliases.add(alias or key)
+    used = rf"(?:{field}|\b(?:{'|'.join(map(re.escape, aliases))})\b)" if aliases else field
+    rx = re.compile(rf"{used}\s*(?:\|\||\?\?)")
+    return [f"{path.name}:{n}: {line.strip()[:100]}" for n, line in lines if rx.search(line)]
+
+
 def test_no_fallbacks_for_config_values():
-    found = _hits(r"state\.\w+(Interval|Enabled)\s*(\|\||\?\?)")
+    keys = _config_state_keys()
+    found = [hit for f in JS_FILES for hit in _config_fallbacks(f, keys)]
     assert not found, "config values have no in-code fallback:\n" + "\n".join(found)
+
+
+def test_fallback_scanner_follows_aliases(tmp_path):
+    sample = tmp_path / "sample.js"
+    sample.write_text(
+        "const a = state.benchmarkInterval || 60;\n"
+        "const bi = state.benchmarkInterval;\nconst x = bi ?? 3600;\n"
+        "const { healthInterval, probeEnabled: pe } = state;\nf(healthInterval || 1, pe ?? true);\n"
+        "const ok = state.benchmarkInterval;\nconst other = 1 || 2;\n"
+    )
+    assert _config_fallbacks(sample, ["benchmarkInterval", "healthInterval", "probeEnabled"]) == [
+        "sample.js:1: const a = state.benchmarkInterval || 60;",
+        "sample.js:3: const x = bi ?? 3600;",
+        "sample.js:5: f(healthInterval || 1, pe ?? true);",
+    ]
 
 
 def test_config_derived_state_starts_unknown():
     """Every interval/enabled value applyConfig() sets starts as null, not as a guess."""
     state_js = (JS_DIR / "state.js").read_text()
-    keys = re.findall(r"state\.(\w+) = cfg\.\w+_(?:seconds|enabled)\b", state_js)
-    assert keys, "applyConfig no longer maps *_seconds/*_enabled fields"
-    guessed = [k for k in keys if not re.search(rf"^\s+{k}: null,", state_js, re.M)]
+    guessed = [k for k in _config_state_keys() if not re.search(rf"^\s+{k}: null,", state_js, re.M)]
     assert not guessed, f"initialise these to null in state.js: {guessed}"
 
 
@@ -95,7 +153,7 @@ def test_banner_is_hidden_by_attribute_not_by_stylesheet():
 
 
 def test_client_never_hardcodes_server_paths_or_close_codes():
-    found = _hits(r"['\"`]/health|['\"`]/ws\b|\b(1008|1012|1013|4000)\b|_STALE_MS|_wsBackoff = \d")
+    found = _hits(r"/(?:health|ws)(?![\w.-])|\b(1008|1012|1013|4000)\b|_STALE_MS|_wsBackoff = \d")
     assert not found, "paths, close codes and timings come from state.conn (window.__MW_CONN__):\n" + "\n".join(found)
 
 

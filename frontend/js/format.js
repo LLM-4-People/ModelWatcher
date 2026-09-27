@@ -2,7 +2,7 @@
 // here: tier colors (explicit class maps for Tailwind v4 scanning), formatted
 // HTML with styled unit spans, freshness tiers, and score/trend display.
 import { state } from './state.js';
-import { esc, SEP_TEXT } from './utils.js';
+import { esc, SEP_TEXT, TIER_DOT } from './utils.js';
 
 const TIER_KEYS = ['accent-400', 'success-400', 'warn-400', 'danger-400', 'danger-700', 'teal-400'];
 
@@ -100,6 +100,8 @@ const _TIP_TO_METRIC = {
   burstArrival: 'burst_arrival_pct', chunkCv: 'chunk_token_cv',
 };
 
+function _tierDotHTML(colorCls) { return `<span class="${colorCls}">${TIER_DOT}</span>`; }
+
 export function tierScaleHTML(tipKey) {
   const metric = _TIP_TO_METRIC[tipKey];
   if (!metric) return '';
@@ -125,7 +127,7 @@ export function tierScaleHTML(tipKey) {
     const boundary = ts[i];
     const prefix = ge ? '≥' : '<';
     const label = i < ts.length - 1 ? `${prefix}${_fmt(boundary)}` : (i > 0 ? `${ge ? '<' : '≥'}${_fmt(ts[i - 1])}` : '');
-    parts.push(`<span class="${colorCls}">●</span> ${label}`);
+    parts.push(`${_tierDotHTML(colorCls)} ${label}`);
   }
   return '<br>' + parts.join(' ');
 }
@@ -378,7 +380,7 @@ export function degradedDescHTML(lt) {
   if (r === 'critical_tier' && lt.critical_metrics?.length) {
     const lines = lt.critical_metrics.map(m => {
       const colorCls = _tierColor(m, _metricValue(m, lt));
-      const dot = colorCls ? `<span class="${colorCls}">●</span>` : '';
+      const dot = colorCls ? _tierDotHTML(colorCls) : '';
       return `${fmtMetricValue(m, lt)} ${dot}`;
     });
     return 'Critical metrics:<br>' + lines.join('<br>');
@@ -391,7 +393,7 @@ export function recordErrorText(h) {
   const retry = h.retry_attempt ? `↻ Retry ${h.retry_attempt}/${h.retry_total || '?'}` : '';
   const msg = h.error || '';
   const parts = [retry, msg].filter(Boolean);
-  return parts.join(' \u2014 ');
+  return parts.join(SEP_TEXT);
 }
 
 const _LABEL_COLORS = { tps: '#22d3ee', ttft: '#a78bfa', uptime: '#fb923c', tails: '#f472b6', batching: '#2dd4bf' };

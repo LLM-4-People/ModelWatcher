@@ -120,6 +120,7 @@ ModelWatcher/
 │   └── e2e/                     # Playwright browser tests against a private seeded server
 ├── requirements.txt             # Python runtime deps
 ├── requirements-dev.txt         # Python dev deps (adds pytest)
+├── pytest.ini                   # pytest settings: project root importable, test paths
 ├── package.json                 # Node deps (Tailwind, SynBad, perf tools)
 ├── Dockerfile                   # Multi-stage: node CSS builder + python runtime
 └── compose.example.yaml  # Example compose config
@@ -133,49 +134,49 @@ npm run test:js     # JS unit tests only: node --test tests/js/*.test.mjs
 npm run test:e2e    # browser tests (builds the CSS first)
 ```
 
-`npm test` runs `python3 -m pytest scripts/tests/ -v` and then `npm run test:js`, so run it with the virtualenv active.
+`npm test` runs `python3 -m pytest scripts/tests/ -v` and then `npm run test:js`, so run it with the virtualenv active. `pytest.ini` puts the project root on the import path and names the test directory, so a bare `pytest` (or an IDE runner) works from any directory as well.
 
 The JS unit tests import frontend modules straight into Node (`utils.js`, `state.js` and `conn.js` touch no DOM at import time) and cover the pure logic: segment and separator markup, status glyphs, WebSocket close classification and reconnect pacing.
 
-The browser tests need Chromium for Playwright (`npx playwright install chromium`; set `MW_E2E_CHROMIUM` to a Chromium binary to use another one). Each spec file starts its own server: `tests/e2e/harness.mjs` seeds a small scale-test dataset into a temp dir with `scripts.util.scale_test_db` (`--app-set` shortens the connection timings), starts `python -m backend.main` on a free port with `MW_DISABLE_TESTS=1` and no code reload, and removes everything afterwards. They never touch `data/`, `config/` or a running instance.
+The browser tests need Chromium for Playwright (`npx playwright install chromium`; set `MW_E2E_CHROMIUM` to a Chromium binary to use another one). Each spec file starts its own server: `tests/e2e/harness.mjs` seeds a small scale-test dataset into a temp dir with `scripts.util.scale_test_db` (`--app-set` shortens the connection timings), starts `python -m backend.main` on a free port with `MW_DISABLE_TESTS=1` and no code reload, and removes everything afterwards. The seeder and the server share a temp `MW_DATA_DIR` (DB, favicons, VAPID keys), and the server starts on the environment the seeder writes with `--server-env`, so they never touch `data/`, `config/` or a running instance.
 
 | Browser test | What it covers |
 |--------------|----------------|
-| `tests/e2e/connection.test.mjs` | Header dot and banner: one socket that stays up on a quiet server, banner hidden without CSS, backoff on a busy server, slow retries after an origin rejection, recovery through the liveness check while `/health` is 503 |
+| `tests/e2e/connection.test.mjs` | Header dot and banner: one socket that stays up on a quiet server, banner hidden without CSS, backoff on a busy server and slow retries after an origin rejection (each socket really opens before the close, as in production), a socket gone silent after its hello closed as stale and replaced, recovery through the liveness check while `/health` is 503 |
 | `tests/e2e/segments.test.mjs` | Every segment row keeps its gap between visible items, every separator has equal and uniform spacing, and phones hide the last-OK group without leaving a stray separator |
 
-Most tests are pure unit tests (extract_model_info, config validation, schema checks, dead-code detection) - no API keys, no network, no shared database. Tests that need a process of their own (seeder, import-time behaviour, env defaults) use the `run_python` fixture from `conftest.py`, which runs from the project root with dev-only overrides (`PYTHONPATH`, `MW_BUILT_CSS_PATH`, `TIKTOKEN_CACHE_DIR`) removed. The `test_api_errors.py` file tests the live `/api/*` endpoints for error format uniformity and requires network access to the running server.
+Most tests are pure unit tests (extract_model_info, config validation, schema checks, dead-code detection) - no API keys, no network, no shared database. Tests that need a process of their own (seeder, import-time behaviour, env defaults, the real app) use the `run_python` fixture from `conftest.py`, which runs from the project root with dev-only overrides (`PYTHONPATH`, `MW_BUILT_CSS_PATH`, `TIKTOKEN_CACHE_DIR`) removed and a private `MW_DATA_DIR`, so no child writes the checkout's `data/`. Children that load the real app (`backend.main` loads its config at import) run on the example configs (the `example_config_env` fixture), report through `emit()` and read WebSocket frames with a deadline through `receive_until()`, both in `scripts/tests/app_child.py`.
 
 | Test file | What it covers |
 |-----------|---------------|
 | `test_api_docs.py` | `docs/API.md` has a section for exactly the app's REST routes, and the endpoint and tag counts in README.md and API.md match the app |
-| `test_api_errors.py` | API error responses are uniform (`{"error": "..."}`) across all routes |
+| `test_api_errors.py` | API error responses are `{"error": "..."}` and nothing else, from every layer that answers with one (handlers, query and body validation, routing, the Host and body-size middleware), checked on the checked-out app with the example configs |
 | `test_built_css.py` | npm scripts, `backend/state.py`, the Dockerfile, `index.html` and the ignore files agree on the built stylesheet path; a missing file logs its path and the build command once per outage, without a traceback |
 | `test_check_imports.py` | `scripts/util/_check_imports.py` derives the load order from the import graph (every backend module, `from backend import x` included), fails on a cycle, and tells needed lazy imports from avoidable ones |
 | `test_config_examples.py` | Every `config/*.example` passes the backend validators, every `app.yaml.example` key is documented in CONFIGURATION.md, leaving out any required key fails with `<path> is required`, and values (log level, host patterns, WebSocket settings) are validated |
 | `test_config_no_defaults.py` | Config has no defaults in code - config is the sole source of truth |
-| `test_config_reload.py` | With `MW_DISABLE_TESTS`, an edit to a config file outside `config/` (an `MW_*_YAML` override) hot-reloads and reaches an open socket as `config_updated` without provider fetches; `reset_epoch` is stripped from the models file in use |
+| `test_config_reload.py` | With `MW_DISABLE_TESTS`, an edit to a config file outside `config/` (an `MW_*_YAML` override) hot-reloads and reaches an open socket as `config_updated` within a deadline, without provider fetches; `reset_epoch` is stripped from the models file in use |
 | `test_db_split.py` | `db_push` and `db_probe` modules use live binding for `db._write_conn` (no stale `None` capture) |
 | `test_deployment.py` | The image copies only `config/*.example`, the build context leaves out local configs and env files, the container starts `python -m backend.main`, no second launch command or ping setting exists, and `server_options()` takes pings and reload from config |
-| `test_docs_commands.py` | Documented commands work as written: Python installs happen inside a virtualenv, scripts that import `backend` run in module form |
+| `test_docs_commands.py` | Documented commands work as written: Python installs happen inside a virtualenv, scripts that import `backend` run in module form, a bare `pytest` imports the project |
 | `test_error_logging.py` | Every backend `except` re-raises or logs through `backend.state` (a broad catch at warning or above); control flow is a keyed, documented allowlist with no stale entries; the scanner is self-tested |
 | `test_favicons.py` | `root_url()` derives a provider's homepage with the Public Suffix List: IP and single-label hosts keep host and port, multi-part and hosted suffixes stay whole |
-| `test_frontend_rules.py` | Frontend source rules: separators, status glyphs and test type labels have one home, config values have no fallbacks, only `conn.js` writes the connection dot and banner, paths and close codes come from the server, every JS `catch` logs or re-throws |
+| `test_frontend_rules.py` | Frontend source rules: separators (dash joiners included), status glyphs (every codepoint ever used, literal, escaped or as an entity) and test type labels have one home, config values have no fallbacks (aliases included), only `conn.js` writes the connection dot and banner, paths and close codes come from the server, every JS `catch` logs or re-throws |
 | `test_host_check.py` | Only a `Host` that names the server is served: IP addresses, `localhost`, the `app.site_url` host and `server.allowed_hosts` patterns; others get 400 or a refused WebSocket, with one warning |
 | `test_line_endings.py` | Every tracked text file is stored and checked out with LF (`.gitattributes` `* text=auto eol=lf`) |
 | `test_migrations.py` | Migrations read columns instead of probing with failing statements: a fresh schema runs no ALTER, missing columns are added once, a failing ALTER is not swallowed |
 | `test_model_key.py` | Model keys are built and split only through `make_model_key`/`parse_model_key` in backend and scripts |
 | `test_pricing.py` | `extract_model_info()` pricing normalization (per-token, per-million, cents-per-million) |
-| `test_project_paths.py` | Only `backend/state.py` derives project paths from `__file__`; everything else imports them |
+| `test_project_paths.py` | Only `backend/state.py` derives project paths from `__file__`; everything else imports them; the DB, VAPID keys, favicons and tiktoken cache all follow `MW_DATA_DIR`, and the real app writes only there |
 | `test_rate_limits.py` | All rate limits come from config, none hardcoded |
 | `test_routes.py` | Readiness logs when it changes, not per request; the client error reporter answers and rate-limits from config; the module preload list is the static import closure of `app.js`, dependencies first |
 | `test_rules.py` | `extract_model_info()` rules: context window, capabilities, thinking, modalities, Ollama suffix rules, two real-world fixtures |
-| `test_scale_test_db.py` | The scale-test seeder creates missing dirs, writes the expected rows with the backend schema, and emits configs the validators accept |
+| `test_scale_test_db.py` | The scale-test seeder creates missing dirs, writes the expected rows with the backend schema, and emits configs the validators accept; a bad `--app-set` is a usage error before anything is written; a server started on its `--server-env` serves every seeded logo |
 | `test_schemas.py` | Pydantic body models match handler field expectations (no drift) |
 | `test_ssoT_labels.py` | Single source of truth for labels - `state.py` owns, `/api/config` exposes, frontend does not redefine |
 | `test_token_encoder.py` | tiktoken is never loaded at import or on the event loop; a failed load logs once, retries after `token_encoding_retry`, token counts fall back to chunk counts, and effective (per-token) ITL stays unmeasured without the encoder |
 | `test_undefined_names.py` | No backend or scripts module uses a name it never defines or imports (pyflakes) |
-| `test_websocket.py` | Same-origin pages are always accepted, other origins follow the allowlist (close 1008), the connection limit closes with 1013, every socket starts with a `hello`, heartbeats run with `MW_DISABLE_TESTS`, `close_all` tells a gone client from a failure, and the real app serves liveness 200 while readiness is 503, rejects a foreign `Host` and preloads the derived module list |
+| `test_websocket.py` | Same-origin pages are always accepted, other origins follow the allowlist (close 1008), the connection limit closes with 1013, every socket starts with a `hello`, heartbeats run with `MW_DISABLE_TESTS` (read with a deadline, so missing ones fail in seconds), `close_all` tells a gone client from a failure, and the real app serves liveness 200 while readiness is 503, rejects a foreign `Host` and preloads the derived module list |
 
 | JS unit test | What it covers |
 |--------------|----------------|
@@ -273,9 +274,9 @@ Scripts import `backend` for its paths and helpers, so run them from the project
 | Script | Purpose | Run command |
 |--------|---------|-------------|
 | `scripts/util/_check_imports.py` | Derives the backend load order from the import graph, exits 1 on a load-time cycle, and says which lazy imports are needed to avoid one | `python3 -m scripts.util._check_imports` |
-| `scripts/util/scale_test_db.py` | Generates a synthetic SQLite database (schema from `backend/db.py`), matching `models`/`app` YAML files and placeholder favicons for scale testing. Output locations, sizes, rates and file names are all options. | `python3 -m scripts.util.scale_test_db --help` |
+| `scripts/util/scale_test_db.py` | Generates a synthetic SQLite database (schema from `backend/db.py`), matching `models`/`app` YAML files and placeholder favicons for scale testing. The DB and favicons go to the server's data dir (`MW_DATA_DIR`, default `data/`); the config dir, sizes, rates and file names are options. A bad `--app-set` or template fails before anything is written. | `python3 -m scripts.util.scale_test_db --help` |
 
-A typical scale-test run seeds a small dataset, then starts the server on it with tests disabled:
+A typical scale-test run seeds a small dataset, then starts the server on it with tests disabled (the seeder ends by logging this command for its output; `--server-env` also writes the variables as JSON):
 
 ```bash
 python3 -m scripts.util.scale_test_db --providers 10 --models-per 5

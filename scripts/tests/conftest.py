@@ -1,7 +1,8 @@
 """Shared fixtures for scripts/tests.
 
 Project paths come from backend.state (the single source); fixtures here run
-subprocesses and git checks the same way for every test module.
+subprocesses and git checks the same way for every test module. Code that runs the
+real app in a child uses the helpers in app_child.py.
 """
 import os
 import re
@@ -11,23 +12,27 @@ import sys
 
 import pytest
 
+from backend.config import _CONFIG_ENV
 from backend.state import BASE_DIR
 
 # Dev-environment overrides that would mask the default behaviour under test
-# (PYTHONPATH can carry a sitecustomize shim that patches tiktoken).
-_SCRUBBED_ENV = ("PYTHONPATH", "MW_BUILT_CSS_PATH", "TIKTOKEN_CACHE_DIR")
+# (PYTHONPATH can carry a sitecustomize shim that patches tiktoken). Every child gets a
+# private MW_DATA_DIR instead, so no test writes the checkout's data/ (F40).
+_SCRUBBED_ENV = ("PYTHONPATH", "MW_BUILT_CSS_PATH", "TIKTOKEN_CACHE_DIR", "MW_DATA_DIR")
 _SUBPROCESS_TIMEOUT_S = 120
 
 
 @pytest.fixture(scope="session")
-def run_python():
-    """Run the current interpreter from the project root with a scrubbed env.
+def run_python(tmp_path_factory):
+    """Run the current interpreter from the project root with a scrubbed env and its own data dir.
 
     Returns the CompletedProcess; raises with captured output when check=True
-    and the command fails, so failures explain themselves.
+    and the command fails, so failures explain themselves. `env` entries win,
+    MW_DATA_DIR included (an empty value means the default data/).
     """
     def _run(*args, env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
         clean = {k: v for k, v in os.environ.items() if k not in _SCRUBBED_ENV}
+        clean["MW_DATA_DIR"] = str(tmp_path_factory.mktemp("data"))
         clean.update(env or {})
         proc = subprocess.run(
             [sys.executable, *map(str, args)], cwd=BASE_DIR, env=clean,
@@ -37,6 +42,12 @@ def run_python():
             pytest.fail(f"{args} exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
         return proc
     return _run
+
+
+@pytest.fixture(scope="session")
+def example_config_env() -> dict[str, str]:
+    """MW_*_YAML overrides that load the app on the shipped config/*.example files."""
+    return {env: f"{name}.example" for name, env in _CONFIG_ENV.items()}
 
 
 @pytest.fixture(scope="session")

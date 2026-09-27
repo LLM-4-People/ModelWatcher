@@ -7,25 +7,25 @@ config/models.yaml even when MW_APP_YAML/MW_MODELS_YAML pointed at other files, 
 override outside config/ never hot-reloaded and its reset_epoch was re-applied forever.
 """
 import copy
-import json
 
 import yaml
 
 from backend.config import config_path
 from backend.state import CONFIG_DIR
+from scripts.tests.app_child import result
 
 APP_EXAMPLE = yaml.safe_load((CONFIG_DIR / "app.yaml.example").read_text())
 MODELS_EXAMPLE = yaml.safe_load((CONFIG_DIR / "models.yaml.example").read_text())
 RELOAD_DEADLINE_S = 20
 
 _CHILD = """
-import json, time
 from pathlib import Path
 import yaml
 from starlette.testclient import TestClient
 import backend.state as st
 from backend import favicons, model_info
 from backend.main import app
+from scripts.tests.app_child import emit, receive_until
 
 app_yaml = Path({app_yaml!r})
 with TestClient(app, base_url='http://localhost') as client:
@@ -35,17 +35,14 @@ with TestClient(app, base_url='http://localhost') as client:
         cfg = yaml.safe_load(app_yaml.read_text())
         cfg['app']['name'] = 'Reloaded'
         app_yaml.write_text(yaml.safe_dump(cfg))
-        frames, deadline = [], time.monotonic() + {deadline}
-        # Heartbeats every 0.2 s bound each receive, so a missing reload fails at the deadline
-        while time.monotonic() < deadline and 'config_updated' not in frames:
-            frames.append(ws.receive_json()['type'])
-    out.update(frames=frames, name=st.c.app_name,
+        frames = receive_until(ws, lambda f: f and f[-1]['type'] == 'config_updated', {deadline})
+    out.update(frames=[f['type'] for f in frames], name=st.c.app_name,
                provider_fetches=[t for t in (favicons._favicon_task, model_info._model_info_task) if t is not None] != [])
-print('RESULT ' + json.dumps(out))
+emit(out)
 """
 
 
-def test_reload_with_tests_disabled_outside_config_dir(run_python, tmp_path):
+def test_reload_with_tests_disabled_outside_config_dir(run_python, example_config_env, tmp_path):
     cfg = copy.deepcopy(APP_EXAMPLE)
     cfg["websocket"]["heartbeat_interval"] = 0.2
     cfg["websocket"]["stale_after"] = 1
@@ -58,11 +55,10 @@ def test_reload_with_tests_disabled_outside_config_dir(run_python, tmp_path):
 
     proc = run_python("-c", _CHILD.format(app_yaml=str(app_yaml), models_yaml=str(models_yaml),
                                           deadline=RELOAD_DEADLINE_S), env={
-        "MW_APP_YAML": str(app_yaml), "MW_MODELS_YAML": str(models_yaml), "MW_AUDITS_YAML": "audits.yaml.example",
-        "MW_DB_NAME": str(tmp_path / "metrics.db"), "MW_DISABLE_TESTS": "1",
+        **example_config_env, "MW_APP_YAML": str(app_yaml), "MW_MODELS_YAML": str(models_yaml), "MW_DISABLE_TESTS": "1",
     })
-    out = json.loads(proc.stdout.split("RESULT ", 1)[1])
-    assert out["frames"][-1] == "config_updated", \
+    out = result(proc)
+    assert out["frames"][-1:] == ["config_updated"], \
         f"no reload within {RELOAD_DEADLINE_S}s ({len(out['frames'])} frames: {sorted(set(out['frames']))})"
     assert out["name"] == "Reloaded"
     assert out["stripped"], "reset_epoch must be stripped from the models file in use"

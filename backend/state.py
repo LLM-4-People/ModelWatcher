@@ -86,12 +86,17 @@ BACKEND_DIR = Path(__file__).resolve().parent
 BASE_DIR = BACKEND_DIR.parent
 
 CONFIG_DIR = BASE_DIR / "config"
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+# Everything the server writes (SQLite DB, VAPID keys, favicons, tiktoken cache) lives under
+# DATA_DIR. MW_DATA_DIR moves all of it at once, a name inside the project or an absolute path,
+# so a seeded or test instance never shares the checkout's data/ (F39, F40).
+DATA_DIR = BASE_DIR / (_os.environ.get("MW_DATA_DIR") or "data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 VAPID_KEY_FILE = DATA_DIR / "vapid_private.pem"
 VAPID_PUB_FILE = DATA_DIR / "vapid_public.txt"
-FRONTEND_DIR = BASE_DIR / "frontend"
+FAVICON_DIR = DATA_DIR / "favicons"
 
 # URL name of the stylesheet `npm run build:css` produces (index.html links it).
 # The default path is that build output; the Dockerfile overrides it (see there).

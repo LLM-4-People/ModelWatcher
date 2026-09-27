@@ -2,9 +2,15 @@
 // Catches finding F5 end to end: the dashboard's own socket was rejected (red dot), the client
 // retried every 3s forever, WebSocket closes and a 503 readiness check produced a false
 // "Server unreachable" that never cleared, and the banner showed whenever the stylesheet was missing.
+// F24: rejections are real accepts followed by a close, so the page's socket opens first as it
+// does in production. F26: a socket that goes silent after its hello is closed as stale and replaced.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer, launchBrowser, pageConn, waitForDot } from './harness.mjs';
+
+const POLL_MS = 50;
+// Allowance for a reconnect to show up after its computed delay (page timers, routing round trips)
+const SLACK_MS = 1500;
 
 let server;
 let browser;
@@ -37,15 +43,50 @@ const bannerHidden = page => page.evaluate(() => {
   return b.hidden && getComputedStyle(b).display === 'none';
 });
 
-// Accepted mocked sockets that the "server" closes at once with one code; records each attempt
+// Every socket reaches the real server, which accepts it, so the page sees it open as in
+// production; the server's first frame (its hello) is dropped and the page gets `code` instead,
+// as from a busy or origin-rejecting server. Closing inside the route handler would close the
+// socket before it ever opened (F24). Records each attempt.
 function closingSocket(code, attempts) {
   return page => page.routeWebSocket(/\/ws$/, ws => {
     attempts.push(Date.now());
-    ws.close({ code, reason: 'test' });
+    let closed = false;
+    ws.connectToServer().onMessage(() => {
+      if (closed) return;
+      closed = true;
+      ws.close({ code, reason: 'test' });
+    });
+  });
+}
+
+// Real sockets that pass on the server's hello and nothing after it: a server gone silent.
+// Records each attempt and the code each socket's page side closed with.
+function silentAfterHello(attempts, closes) {
+  return page => page.routeWebSocket(/\/ws$/, ws => {
+    attempts.push(Date.now());
+    const server = ws.connectToServer();
+    let frames = 0;
+    server.onMessage(frame => { if (frames++ === 0) ws.send(frame); });
+    let closed = false;
+    // Playwright reports the page's close a second time once the server side has closed too
+    ws.onClose((code, reason) => {
+      if (closed) return;
+      closed = true;
+      closes.push(code);
+      server.close({ code, reason });
+    });
   });
 }
 
 const gaps = times => times.slice(1).map((t, i) => t - times[i]);
+
+async function until(condition, timeoutMs, what) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+}
 
 test('the page holds one live socket on a server with tests disabled', async () => {
   const { page, events } = await openPage();
@@ -95,6 +136,21 @@ test('an origin rejection shows as rejected and retries at the slowest pace', as
   for (const gap of g) assert.ok(gap >= conn.reconnect.max_delay * 1000 * 0.9, `retried after ${gap} ms`);
   assert.equal(await page.evaluate(() => document.getElementById('ws-status').dataset.tip), 'ws_rejected');
   assert.ok(await bannerHidden(page));
+  await page.close();
+});
+
+test('a socket that goes silent after its hello is closed as stale and replaced', async () => {
+  const attempts = [];
+  const closes = [];
+  const { page } = await openPage(silentAfterHello(attempts, closes));
+  const conn = await pageConn(page);
+  await waitForDot(page, 'connected', 5000);
+  // The hello reset the backoff, so the replacement follows stale_after plus min_delay
+  const expectedMs = (conn.stale_after + conn.reconnect.min_delay) * 1000;
+  await until(() => attempts.length >= 2, expectedMs + SLACK_MS, 'a replacement socket');
+  assert.deepEqual(closes, [conn.close_codes.stale], 'the page closes the silent socket with the stale code');
+  assert.ok(gaps(attempts)[0] >= conn.stale_after * 1000, `replaced after ${gaps(attempts)[0]} ms, before stale_after`);
+  assert.ok(await bannerHidden(page), 'a stale socket does not mean the server is unreachable');
   await page.close();
 });
 

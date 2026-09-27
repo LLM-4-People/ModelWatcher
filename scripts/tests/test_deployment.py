@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from backend.state import BACKEND_DIR, BASE_DIR, CONFIG_DIR
+from scripts.tests.app_child import result
 
 APP_EXAMPLE = yaml.safe_load((CONFIG_DIR / "app.yaml.example").read_text())
 ENTRY_POINT = ["python", "-m", "backend.main"]
@@ -83,22 +84,18 @@ def test_no_second_launch_path_or_ping_setting(path):
         "start the server with `python -m backend.main`"
 
 
-def _server_options(run_python, tmp_path, debug: bool) -> dict:
+def _server_options(run_python, env: dict, tmp_path, debug: bool) -> dict:
     cfg = copy.deepcopy(APP_EXAMPLE)
     cfg["app"]["debug"] = debug
     app_yaml = tmp_path / "app.yaml"
     app_yaml.write_text(yaml.safe_dump(cfg))
-    code = "import json\nfrom backend.main import server_options\nprint('RESULT ' + json.dumps(server_options()))\n"
-    proc = run_python("-c", code, env={
-        "MW_APP_YAML": str(app_yaml), "MW_MODELS_YAML": "models.yaml.example", "MW_AUDITS_YAML": "audits.yaml.example",
-        "MW_DB_NAME": str(tmp_path / "metrics.db"), "HOST": "127.0.0.1", "PORT": "8099",
-    })
-    return json.loads(proc.stdout.split("RESULT ", 1)[1])
+    code = "from backend.main import server_options\nfrom scripts.tests.app_child import emit\nemit(server_options())\n"
+    return result(run_python("-c", code, env={**env, "MW_APP_YAML": str(app_yaml), "HOST": "127.0.0.1", "PORT": "8099"}))
 
 
 @pytest.mark.parametrize("debug", [True, False])
-def test_server_options_come_from_config_and_env(run_python, tmp_path, debug):
-    options = _server_options(run_python, tmp_path, debug)
+def test_server_options_come_from_config_and_env(run_python, example_config_env, tmp_path, debug):
+    options = _server_options(run_python, example_config_env, tmp_path, debug)
     ws = APP_EXAMPLE["websocket"]
     assert options["ws_ping_interval"] == ws["ping_interval"]
     assert options["ws_ping_timeout"] == ws["ping_timeout"]

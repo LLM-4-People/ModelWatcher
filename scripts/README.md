@@ -6,7 +6,7 @@ Developer utilities for the ModelWatcher backend.
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Pytest suite, shared fixtures in `tests/conftest.py`. Run via `npm test` or `python3 -m pytest scripts/tests/ -v`. |
+| `tests/` | Pytest suite, shared fixtures in `tests/conftest.py`, helpers for real-app child processes in `tests/app_child.py`. Run via `npm test`, `python3 -m pytest scripts/tests/ -v` or a bare `pytest`. |
 | `util/` | Reusable infrastructure scripts (circular-import checker, synthetic DB generator). |
 
 ## Running the tests
@@ -27,5 +27,6 @@ root in module form:
   exits 1 on a load-time cycle, and says which lazy imports are needed to avoid one.
   Run: `python3 -m scripts.util._check_imports`
 - `util/scale_test_db.py` - generates a synthetic SQLite database (backend schema),
-  matching YAML configs and favicons for scale testing. Run:
+  matching YAML configs and favicons for scale testing. The DB and favicons go to the
+  server's data dir (`MW_DATA_DIR`). Run:
   `python3 -m scripts.util.scale_test_db --help` for every option.

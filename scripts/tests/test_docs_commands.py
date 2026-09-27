@@ -3,7 +3,8 @@
 Catches finding F7: DEVELOPMENT.md installed Python dependencies into the system
 interpreter, where Debian-patched Pythons fail to build http-ece; a virtualenv works.
 Catches finding F1 (docs side): the seeder's usage still named its old location,
-and running a scripts/ file by path cannot import backend.
+and running a scripts/ file by path cannot import backend. And F43: bare `pytest`
+failed at conftest import (no module named backend); only `python -m pytest` worked.
 """
 import re
 
@@ -59,3 +60,14 @@ def test_scripts_are_invoked_in_module_form(path):
 def test_virtualenv_dir_is_ignored(git_ignored):
     assert git_ignored(".venv")
     assert ".venv/" in (BASE_DIR / ".dockerignore").read_text().splitlines()
+
+
+def test_bare_pytest_imports_the_project(run_python):
+    """`pytest` puts neither the working directory nor the project on sys.path; pytest.ini must.
+
+    -P leaves the working directory off sys.path as the `pytest` entry point does, where
+    `python -m pytest` would add it and hide a missing setting.
+    """
+    code = "import sys, pytest; sys.exit(pytest.main(['--collect-only', '-q', 'scripts/tests/test_project_paths.py']))"
+    proc = run_python("-P", "-c", code, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

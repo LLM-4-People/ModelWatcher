@@ -145,7 +145,7 @@ export function _statusMessage(data, lt) {
   const retry = isRetry ? `↻ Retry ${data.retry_attempt}/${data.retry_total}` : '';
   const msg = _healthErrorIfNewer(data, lt) || recordErrorText(lt) ||
     (data.status === 'error' ? 'Health check failed' : (data.status === 'degraded' || lt?.degraded ? 'Performance degraded' : ''));
-  return [retry, msg].filter(Boolean).join(' \u2014 ');
+  return [retry, msg].filter(Boolean).join(SEP_TEXT);
 }
 
 let _tipIdCounter = 0;

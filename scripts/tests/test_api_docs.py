@@ -3,32 +3,29 @@
 Catches finding F37: adding /health/live left API.md and README.md saying "15 REST
 endpoints" while the app served 16.
 """
-import json
 import re
 
 import pytest
 
 from backend.state import BASE_DIR
+from scripts.tests.app_child import result
 
 _DOCS_WITH_COUNTS = ["README.md", "docs/API.md"]
 _COUNT_RE = re.compile(r"(\d+) REST endpoints(?: across (\d+) tags)?")
 
 
 @pytest.fixture(scope="module")
-def app_routes(run_python) -> dict:
+def app_routes(run_python, example_config_env) -> dict:
     """The documented surface of the real app: its schema routes and tags (loaded in a clean process)."""
     code = (
-        "import json\n"
         "from fastapi.routing import APIRoute\n"
         "from backend.main import app\n"
+        "from scripts.tests.app_child import emit\n"
         "routes = sorted(f'{m} {r.path}' for r in app.routes if isinstance(r, APIRoute) and r.include_in_schema\n"
         "                for m in r.methods)\n"
-        "print('RESULT ' + json.dumps({'routes': routes, 'tags': len(app.openapi_tags)}))\n"
+        "emit({'routes': routes, 'tags': len(app.openapi_tags)})\n"
     )
-    out = run_python("-c", code, env={
-        "MW_APP_YAML": "app.yaml.example", "MW_MODELS_YAML": "models.yaml.example", "MW_AUDITS_YAML": "audits.yaml.example",
-    }).stdout
-    return json.loads(out.split("RESULT ", 1)[1])
+    return result(run_python("-c", code, env=example_config_env))
 
 
 def test_api_md_documents_every_route(app_routes):

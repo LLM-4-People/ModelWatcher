@@ -468,16 +468,19 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 ### Config file path overrides
 
-`MW_MODELS_YAML`, `MW_APP_YAML` and `MW_AUDITS_YAML` take a file name inside `config/`, and `MW_DB_NAME` one inside `data/`; any of them may also be an absolute path, which is how the tests and the browser-test harness run a server on files in a temp dir. The config watcher watches exactly these files, and the `reset_epoch` rewrite edits the models file in use, wherever it lives.
+`MW_MODELS_YAML`, `MW_APP_YAML` and `MW_AUDITS_YAML` take a file name inside `config/`, and `MW_DB_NAME` one inside the data dir; any of them may also be an absolute path, which is how the tests and the browser-test harness run a server on files in a temp dir. The config watcher watches exactly these files, and the `reset_epoch` rewrite edits the models file in use, wherever it lives.
+
+`MW_DATA_DIR` moves everything the server writes at once: the SQLite DB, the VAPID keys, cached favicons and the tiktoken cache. It takes a directory name inside the project or an absolute path, and is created if missing. The scale-test seeder writes its DB and favicons there too, so run both with the same value.
 
 | Variable | Description |
 |----------|-------------|
 | `MW_MODELS_YAML` | Override models config file path |
 | `MW_APP_YAML` | Override app config file path |
 | `MW_AUDITS_YAML` | Override audits config file path |
+| `MW_DATA_DIR` | Directory for the DB, VAPID keys, favicons and tiktoken cache (default: `data`) |
 | `MW_DB_NAME` | Override SQLite database filename (default: `metrics.db`) |
 | `MW_BUILT_CSS_PATH` | Override built CSS path (default: `frontend/tailwind.min.css`, the `npm run build:css` output; the Docker image sets `/opt/frontend/tailwind.min.css`) |
-| `TIKTOKEN_CACHE_DIR` | Where tiktoken caches downloaded encodings (default: `data/tiktoken`, so a deployment downloads each encoding once) |
+| `TIKTOKEN_CACHE_DIR` | Where tiktoken caches downloaded encodings (default: `tiktoken` in the data dir, so a deployment downloads each encoding once) |
 
 ### Server bind
 

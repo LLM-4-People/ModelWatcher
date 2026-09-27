@@ -1,72 +1,68 @@
-"""Test: API error responses are uniform across all routes.
+"""Test: API error responses are uniform ({"error": "message"} and nothing else) across all routes.
 
-Catches bug family #3: 422 returned {"detail":[...]} while handlers
-returned {"error":"msg"} - external tools couldn't parse errors uniformly.
+Catches bug family #3: 422 returned {"detail":[...]} while handlers returned {"error":"msg"},
+so external tools could not parse errors uniformly. And finding F8: this file used to call the
+production host, so it failed offline and checked whatever that deployment ran instead of this
+checkout. It now runs the checked-out app on the example configs in a child process, one case
+per source of error responses: handlers, query and body validation, routing, and middleware.
 """
 import json
-import urllib.request
-import urllib.error
 
 import pytest
 
-from backend.state import BACKEND_DIR
+from backend.state import BACKEND_DIR, MAX_REQUEST_BODY_BYTES
+from scripts.tests.app_child import result
 
-BASE = "https://stats.ai4fun.dev"
+# (method, path, request kwargs, expected status), keyed by the layer that answers. `body_bytes`
+# stands for a body of that size, built in the child (too big for a command-line argument).
+ERROR_CASES = {
+    "handler: type without model": ("GET", "/api/metrics?type=invalid", {}, 400),
+    "handler: empty model": ("GET", "/api/metrics?model=&type=card", {}, 400),
+    "handler: bad since": ("GET", "/api/notifications?since=not-a-date", {}, 400),
+    "query validation: too long": ("GET", f"/api/audit?model={'x' * 300}", {}, 422),
+    "query validation: not a float": ("GET", "/api/metrics?model=x&type=card&since=abc", {}, 422),
+    "body validation": ("POST", "/api/client-error", {"json": {"unexpected": 1}}, 422),
+    "router: unknown path": ("GET", "/api/nonexistent", {}, 404),
+    "router: wrong method": ("DELETE", "/api/metrics", {}, 405),
+    "middleware: foreign Host": ("GET", "/api/config", {"headers": {"host": "rebind.example.org"}}, 400),
+    "middleware: body too large": ("POST", "/api/client-error", {"body_bytes": MAX_REQUEST_BODY_BYTES + 1}, 413),
+}
 
+_CHILD = """
+import json, sys
+from starlette.testclient import TestClient
+from backend.main import app
+from scripts.tests.app_child import emit
 
-def _get_error(path):
-    """Fetch a path that should error, return (status_code, body_dict)."""
-    try:
-        r = urllib.request.urlopen(f"{BASE}{path}")
-        return r.status, json.load(r)
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
-
-
-def test_400_handler_error_format():
-    """Handler-level 400 returns {"error": "msg"}."""
-    code, body = _get_error("/api/metrics?type=invalid")
-    assert code == 400
-    assert "error" in body
-    assert "detail" not in body
-
-
-def test_422_validation_error_format():
-    """FastAPI 422 validation returns {"error": "msg"} (not {"detail": [...]})."""
-    code, body = _get_error(f"/api/audit?model={'x'*300}")
-    assert code == 422
-    assert "error" in body
-    assert "detail" not in body
-
-
-def test_404_error_format():
-    """404 returns {"error": "msg"} (not {"detail": "Not Found"})."""
-    code, body = _get_error("/api/nonexistent")
-    assert code == 404
-    assert "error" in body
-    assert "detail" not in body
+cases = json.loads(sys.argv[1])
+with TestClient(app, base_url='http://localhost') as client:
+    out = {}
+    for name, (method, path, kwargs) in cases.items():
+        if 'body_bytes' in kwargs:
+            kwargs['content'] = b'x' * kwargs.pop('body_bytes')
+        r = client.request(method, path, **kwargs)
+        out[name] = {'status': r.status_code, 'type': r.headers.get('content-type'), 'body': r.text}
+emit(out)
+"""
 
 
-def test_400_empty_model():
-    """Empty model param returns {"error": "msg"}."""
-    code, body = _get_error("/api/metrics?model=&type=card")
-    assert code == 400
-    assert "error" in body
+@pytest.fixture(scope="module")
+def responses(run_python, example_config_env) -> dict:
+    """Every case answered by the real app (backend.main) on the example configs, tests disabled."""
+    cases = {name: case[:3] for name, case in ERROR_CASES.items()}
+    proc = run_python("-c", _CHILD, json.dumps(cases), env={**example_config_env, "MW_DISABLE_TESTS": "1"})
+    return result(proc)
 
 
-def test_400_bad_since():
-    """Bad 'since' param on /api/notifications returns {"error": "msg"}."""
-    code, body = _get_error("/api/notifications?since=not-a-date")
-    assert code == 400
-    assert "error" in body
-
-
-def test_422_bad_float():
-    """Bad float param on /api/metrics returns 422 with {"error": "msg"}."""
-    code, body = _get_error("/api/metrics?model=x&type=card&since=abc")
-    assert code == 422
-    assert "error" in body
-    assert "detail" not in body
+@pytest.mark.parametrize("name", ERROR_CASES)
+def test_error_response_format(responses, name):
+    expected_status = ERROR_CASES[name][3]
+    got = responses[name]
+    assert got["status"] == expected_status, got
+    assert got["type"] == "application/json", got
+    body = json.loads(got["body"])
+    assert list(body) == ["error"], f"error bodies carry only 'error': {body}"
+    assert isinstance(body["error"], str) and body["error"], body
 
 
 def test_no_bare_dict_returns_in_push_handlers():

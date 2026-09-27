@@ -2,7 +2,7 @@
 // are the single enforcement point; client-side handleNotification applies
 // partial defense-in-depth (master toggle + popups + recovery grounding).
 import { state, _NOTIF_OPTS, LS } from './state.js';
-import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, parseModelKey, initSheetDrag, BP_SM, setText, setHTML, collapsibleHTML, toggleCollapsible, STATUS_GLYPH } from './utils.js';
+import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, parseModelKey, initSheetDrag, BP_SM, setText, setHTML, collapsibleHTML, toggleCollapsible, STATUS_GLYPH, SEP_TEXT } from './utils.js';
 import { TIER_TEXT, TIER_BG, timeAgo } from './format.js';
 import { api } from './api.js';
 import { cacheGet, cacheSet } from './cache.js';
@@ -274,11 +274,16 @@ export function handleNotification(notif) {
     try {
       const { provider } = parseModelKey(notif.model_key);
       const model = _displayName(notif.model_key);
-      const title = [provider, model, _notifTypeLabel(notif.event_type, notif.action)].filter(Boolean).join(' - ');
+      const title = _notifTitle(provider, model, notif);
       const tag = 'mw-' + notif.model_key + (notif.action ? `-${notif.action}` : '');
       new Notification(title, { body: notif.body || '', icon: (window.__STATIC_PREFIX__ || '/frontend') + '/icon-192.png', tag });
     } catch (e) { logError(logTag('Notif', '\u2190', 'Error', 'BrowserNotify'), e); }
   }
+}
+
+// One line naming a notification: the browser notification title and the toast's aria-label
+function _notifTitle(provider, model, notif) {
+  return [provider, model, _notifTypeLabel(notif.event_type, notif.action)].filter(Boolean).join(SEP_TEXT);
 }
 
 // --- Toast popups ---
@@ -293,8 +298,7 @@ function showToast(notif) {
   el.className = 'toast';
   // Per-toast ARIA live region is NOT needed - #toast-container has role="status" aria-live="polite" aria-atomic="false"
   // (Roselli: live region must exist in DOM statically, not on dynamic children)
-  const ariaLabel = [provider, model, _notifTypeLabel(notif.event_type, notif.action)].filter(Boolean).join(' - ');
-  el.setAttribute('aria-label', ariaLabel);
+  el.setAttribute('aria-label', _notifTitle(provider, model, notif));
   el.innerHTML = `<div class="toast-icon ${esc(className)} sev-${severity}">${icon}</div><div class="toast-body"><div class="toast-header"><span class="toast-type t-${severity}">${esc(_notifTypeLabel(notif.event_type, notif.action))}</span><button class="toast-dismiss" aria-label="Dismiss">&times;</button></div>${provider ? `<div class="toast-provider">${esc(provider)}</div>` : ''}<div class="toast-model">${esc(model)}</div>${notif.body ? `<div class="toast-detail">${esc(notif.body)}</div>` : ''}</div>`;
   el.addEventListener('click', (e) => {
     if (e.target.classList.contains('toast-dismiss')) { dismissToast(el); return; }

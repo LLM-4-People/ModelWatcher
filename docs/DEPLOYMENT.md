@@ -188,6 +188,7 @@ Set one per provider referenced in `config/models.yaml` via `${VAR_NAME}` syntax
 | `MW_MODELS_YAML` | Override models config file path |
 | `MW_APP_YAML` | Override app config file path |
 | `MW_AUDITS_YAML` | Override audits config file path |
+| `MW_DATA_DIR` | Directory for the DB, VAPID keys, favicons and tiktoken cache (default: `data`, the `/app/data` volume) |
 | `MW_DB_NAME` | Override SQLite database filename (example: `metrics.db`) |
 | `MW_BUILT_CSS_PATH` | Override built CSS path (the Dockerfile sets `/opt/frontend/tailwind.min.css`, outside the read-only `/app` mount) |
 | `TIKTOKEN_CACHE_DIR` | tiktoken encoding cache (default: `data/tiktoken`, inside the persistent data volume) |

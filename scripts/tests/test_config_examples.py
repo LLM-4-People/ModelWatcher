@@ -34,17 +34,14 @@ def test_examples_pass_validation():
     _validate_audits_cfg(yaml.safe_load((CONFIG_DIR / "audits.yaml.example").read_text())["audit"])
 
 
-def test_examples_load_end_to_end(run_python):
+def test_examples_load_end_to_end(run_python, example_config_env):
     code = (
         "from backend.config import reload_config\n"
         "import backend.state as st\n"
         "reload_config()\n"
         "print(st.c.benchmark_token_encoding, st.c.benchmark_token_encoding_retry)\n"
     )
-    out = run_python("-c", code, env={
-        "MW_APP_YAML": "app.yaml.example", "MW_MODELS_YAML": "models.yaml.example",
-        "MW_AUDITS_YAML": "audits.yaml.example",
-    }).stdout.split()
+    out = run_python("-c", code, env=example_config_env).stdout.split()
     bench = APP_EXAMPLE["testing"]["benchmark"]
     assert out[-2] == bench["token_encoding"]
     assert int(out[-1]) > 0

@@ -12,11 +12,14 @@ Run from the project root, in module form so `backend` is importable:
     python3 -m scripts.util.scale_test_db --providers 10 --models-per 5   # 50 models (fast)
     python3 -m scripts.util.scale_test_db --help                          # every option and default
 
-It finishes by logging the env vars that start the server on the generated files.
+The DB and favicons go to the server's data dir (backend.state.DATA_DIR), so run it with the
+same MW_DATA_DIR as the server. It finishes by logging the env vars that start the server on
+the generated files (--server-env also writes them as JSON, for the browser-test harness).
 """
 
 import argparse
 import colorsys
+import json
 import random
 import time
 from datetime import datetime, timezone
@@ -26,7 +29,8 @@ import yaml
 
 import backend.db as db
 import backend.state as st
-from backend.favicons import FAVICON_DIR, provider_slug
+from backend.config import _validate_config
+from backend.favicons import provider_slug
 
 PROVIDER_NAMES = [
     "AlphaAI", "BetaLLM", "CloudMind", "DeltaGPT", "EchoNet",
@@ -88,7 +92,7 @@ _CRITICAL_METRICS = ("tps", "stall_count", "raw_p99_itl_ms", "effective_itl_tail
 _FONT_CANDIDATES = ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf")
 
 
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Generate a scale-test DB and configs for ModelWatcher",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -103,9 +107,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--degraded-rate", type=float, default=0.08, help="Share of successful benchmarks marked degraded")
     ap.add_argument("--seed", type=int, default=42, help="Random seed, for reproducible output")
     ap.add_argument("--flush-rows", type=int, default=50_000, help="Rows buffered before each SQLite write")
-    ap.add_argument("--data-dir", type=Path, default=st.DATA_DIR, help="Where the DB and favicons go")
     ap.add_argument("--config-dir", type=Path, default=st.CONFIG_DIR, help="Where the generated YAML files go")
-    ap.add_argument("--db-name", default="metrics-scale-test.db", help="Server reads it via MW_DB_NAME")
+    ap.add_argument("--db-name", default="metrics-scale-test.db", help="DB file in the data dir; the server reads it via MW_DB_NAME")
     ap.add_argument("--models-yaml", default="models-scale-test.yaml", help="Server reads it via MW_MODELS_YAML")
     ap.add_argument("--app-yaml", default="app-scale-test.yaml", help="Server reads it via MW_APP_YAML")
     ap.add_argument("--app-template", type=Path, default=st.CONFIG_DIR / "app.yaml",
@@ -116,14 +119,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--app-set", type=_app_override, action="append", default=[], metavar="PATH=VALUE",
                     help="Override a template key in the generated app.yaml (dotted path, YAML value, "
                          "repeatable), e.g. websocket.heartbeat_interval=1")
-    return ap.parse_args(argv)
+    ap.add_argument("--server-env", type=Path, default=None, metavar="PATH",
+                    help="Also write the env vars that start the server on the generated files to PATH as JSON")
+    return ap
 
 
 def _app_override(text: str) -> tuple[list[str], object]:
     path, sep, value = text.partition("=")
     if not sep or not path:
         raise argparse.ArgumentTypeError(f"expected PATH=VALUE, got {text!r}")
-    return path.split("."), yaml.safe_load(value)
+    try:
+        return path.split("."), yaml.safe_load(value)
+    except yaml.YAMLError as e:
+        raise argparse.ArgumentTypeError(f"{path}: value is not YAML: {e}") from e
 
 
 def _build_providers(n_providers: int, models_per: int) -> list[tuple[str, str, list[str]]]:
@@ -272,22 +280,45 @@ def _write_models_yaml(path: Path, providers: list):
     path.write_text("# Auto-generated scale test config\n" + yaml.safe_dump(cfg, sort_keys=False))
 
 
-def _write_app_yaml(path: Path, template: Path, bench_interval: int, total_models: int, overrides: list):
-    """Copy the template with a scaled benchmark interval, stagger off, and the --app-set overrides."""
+def _app_config(template: Path, bench_interval: int, overrides: list) -> dict:
+    """The template with a scaled benchmark interval, stagger off and the --app-set overrides, validated.
+
+    Built before anything is seeded, so a bad template or override fails at once and leaves
+    no partial output (F38). Raises ValueError (OSError or YAMLError for an unreadable template).
+    """
     cfg = yaml.safe_load(template.read_text())
-    bench = cfg["testing"]["benchmark"]
-    bench["interval"] = bench_interval
-    bench["stagger"] = False
-    for keys, value in overrides:
+    scaled = [(["testing", "benchmark", "interval"], bench_interval), (["testing", "benchmark", "stagger"], False)]
+    for keys, value in scaled + overrides:
         node = cfg
-        for key in keys[:-1]:
-            node = node[key]
-        # Only existing keys: a typo would otherwise add a key the server ignores or rejects later
-        if keys[-1] not in node:
-            raise KeyError(f"--app-set {'.'.join(keys)}: no such key in {template.name}")
+        # Only existing keys, at every level: a typo would otherwise add a key the server ignores or rejects later
+        for depth, key in enumerate(keys):
+            if not isinstance(node, dict) or key not in node:
+                raise ValueError(f"no key {'.'.join(keys[:depth + 1])} in {template.name}")
+            if depth < len(keys) - 1:
+                node = node[key]
         node[keys[-1]] = value
+    _validate_config(cfg)
+    return cfg
+
+
+def _write_app_yaml(path: Path, cfg: dict, template: Path, total_models: int):
     header = f"# Auto-generated from {template.name} - {total_models} models, stagger disabled\n"
     path.write_text(header + yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+
+
+def _server_env(db_name: str, config_dir: Path, models_yaml: str, app_yaml: str) -> dict[str, str]:
+    """Env vars that start the server on the generated files (besides MW_DISABLE_TESTS, HOST, PORT).
+
+    The server gets the seeder's own data dir; MW_*_YAML take a name inside config/ or an absolute path.
+    """
+    in_config = config_dir.resolve() == st.CONFIG_DIR
+    return {
+        "MW_DATA_DIR": str(st.DATA_DIR.resolve()),
+        "MW_DB_NAME": db_name,
+        "MW_MODELS_YAML": models_yaml if in_config else str((config_dir / models_yaml).resolve()),
+        "MW_APP_YAML": app_yaml if in_config else str((config_dir / app_yaml).resolve()),
+        API_KEY_ENV: "dummy",
+    }
 
 
 def _favicon_font():
@@ -326,40 +357,40 @@ def _write_favicons(favicon_dir: Path, providers: list, favicon_ext: str):
 
 
 def main(argv: list[str] | None = None):
-    args = _parse_args(argv)
+    ap = _parser()
+    args = ap.parse_args(argv)
     random.seed(args.seed)
     providers = _build_providers(args.providers, args.models_per)
     total_models = sum(len(model_ids) for _, _, model_ids in providers)
+    bench_interval = args.app_bench_interval or total_models * _APP_BENCH_SECONDS_PER_MODEL + _APP_BENCH_HEADROOM_S
+    try:
+        app_cfg = _app_config(args.app_template, bench_interval, args.app_set)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        ap.error(f"cannot build {args.app_yaml} from {args.app_template}: {e}")
     favicon_ext = "png" if st.pillow_available else "svg"
     if not st.pillow_available:
         st.log.warning("Pillow not installed - generating SVG favicon placeholders")
 
-    args.data_dir.mkdir(parents=True, exist_ok=True)
     args.config_dir.mkdir(parents=True, exist_ok=True)
-    db_path = args.data_dir / args.db_name
+    db_path = st.DATA_DIR / args.db_name
     models_yaml = args.config_dir / args.models_yaml
     app_yaml = args.config_dir / args.app_yaml
-    favicon_dir = args.data_dir / FAVICON_DIR.name
-    bench_interval = args.app_bench_interval or total_models * _APP_BENCH_SECONDS_PER_MODEL + _APP_BENCH_HEADROOM_S
 
     rows = _seed_db(db_path, providers, favicon_ext, args)
     _write_models_yaml(models_yaml, providers)
-    _write_app_yaml(app_yaml, args.app_template, bench_interval, total_models, args.app_set)
-    _write_favicons(favicon_dir, providers, favicon_ext)
+    _write_app_yaml(app_yaml, app_cfg, args.app_template, total_models)
+    _write_favicons(st.FAVICON_DIR, providers, favicon_ext)
 
     st.log.info("Done: %d providers, %d models, %d results", len(providers), total_models, rows)
     st.log.info("  Database:    %s (%.1f MB)", db_path, db_path.stat().st_size / 1024 / 1024)
     st.log.info("  Models YAML: %s", models_yaml)
     st.log.info("  App YAML:    %s", app_yaml)
-    st.log.info("  Favicons:    %s", favicon_dir)
-    # MW_DB_NAME and MW_*_YAML take a name inside data/ and config/, or an absolute path
-    in_place = (args.data_dir.resolve(), args.config_dir.resolve()) == (st.DATA_DIR, st.CONFIG_DIR)
-    st.log.info(
-        "Start the server with: MW_DB_NAME=%s MW_MODELS_YAML=%s MW_APP_YAML=%s %s=dummy MW_DISABLE_TESTS=1 "
-        "PORT=8080 python3 -m backend.main",
-        *((args.db_name, args.models_yaml, args.app_yaml) if in_place else (db_path.resolve(), models_yaml.resolve(), app_yaml.resolve())),
-        API_KEY_ENV,
-    )
+    st.log.info("  Favicons:    %s", st.FAVICON_DIR)
+    env = _server_env(args.db_name, args.config_dir, args.models_yaml, args.app_yaml)
+    if args.server_env:
+        args.server_env.write_text(json.dumps(env))
+    st.log.info("Start the server with: %s MW_DISABLE_TESTS=1 PORT=8080 python3 -m backend.main",
+                " ".join(f"{k}={v}" for k, v in env.items()))
 
 
 if __name__ == "__main__":
