@@ -5,6 +5,7 @@ All domain modules import from here.
 """
 
 import asyncio
+import ipaddress
 import logging
 import sys
 import time
@@ -36,6 +37,24 @@ for _fw_name, _fw_level in [("uvicorn", logging.WARNING), ("uvicorn.error", logg
     logging.getLogger(_fw_name).setLevel(_fw_level)
 
 
+_failing_conditions: set[str] = set()
+
+
+def condition_changed(key: str, failing: bool) -> bool:
+    """Record whether a recurring check is failing; True only when that differs from the last call.
+
+    Lets code that runs on every request (the readiness check, a missing stylesheet) log a
+    problem when it starts and when it clears instead of on every hit (findings F18, F44).
+    A key starts out passing, so its first failure is a change and its first success is not.
+    """
+    was_failing = key in _failing_conditions
+    if failing:
+        _failing_conditions.add(key)
+    else:
+        _failing_conditions.discard(key)
+    return failing != was_failing
+
+
 def log_error(msg: str, exc: BaseException | None = None):
     """Log an error with optional exception. Use in every except block instead of bare pass.
 
@@ -50,11 +69,13 @@ def log_error(msg: str, exc: BaseException | None = None):
         log.error("%s", msg)
 
 
-_LOG_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+# app.log_level values in increasing severity (validated in config.py); the browser gets the index
+LOG_LEVELS = ("debug", "info", "warning", "error")
+
 
 def apply_log_level(level: str):
     """Apply the configured log level to the modelwatcher logger."""
-    log.setLevel(_LOG_LEVELS.get(level, logging.WARNING))
+    log.setLevel(getattr(logging, level.upper()))
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -82,6 +103,10 @@ BUILT_CSS_PATH = Path(_os.environ.get("MW_BUILT_CSS_PATH", FRONTEND_DIR / BUILT_
 # unreachable server from a degraded one; /health stays the readiness check (Docker HEALTHCHECK).
 LIVENESS_PATH = "/health/live"
 WS_PATH = "/ws"
+
+# MW_DISABLE_TESTS: run without testing or contacting providers (main._OUTBOUND_TASKS lists
+# what startup skips; config reloads skip the same fetches). Notifications are not affected.
+TESTS_DISABLED = bool(_os.environ.get("MW_DISABLE_TESTS"))
 
 # tiktoken reads this when it first loads an encoding; keeping the cache in the
 # persistent data dir means a deployment downloads each encoding only once.
@@ -583,13 +608,21 @@ def ensure_scheme(url: str) -> str:
     return url
 
 
+def is_ip_literal(host: str) -> bool:
+    """Whether a host (no port, no IPv6 brackets) is an IP address rather than a name."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 # ── Optional dependencies ───────────────────────────────────────────────────
 
 try:
-    from watchfiles import awatch, Change
+    from watchfiles import awatch
 except ImportError:
     awatch = None
-    Change = None
 
 try:
     from pywebpush import webpush  # noqa: F401 - re-exported for push helpers

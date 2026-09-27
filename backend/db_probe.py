@@ -9,7 +9,7 @@ import time
 
 import orjson
 
-from backend.state import log, log_error
+from backend.state import log
 import backend.db as db
 
 
@@ -166,6 +166,6 @@ def _probe_row_to_dict(row) -> dict:
     if rm:
         try:
             d["response_meta"] = orjson.loads(rm)
-        except Exception as e:
-            log.debug("Corrupt response_meta JSON in probe_results for %s", d.get("model_key", "?"))
+        except orjson.JSONDecodeError as e:
+            log.warning("Corrupt response_meta JSON in probe_results for %s: %s", d.get("model_key", "?"), e)
     return {k: v for k, v in d.items() if v is not None}

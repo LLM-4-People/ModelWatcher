@@ -51,10 +51,10 @@ Example files are provided: `config/app.yaml.example`, `config/models.yaml.examp
 |-------|------|---------|-------------|
 | `name` | string | (required) | Display name - used in HTML title, manifest, footer, push notification titles |
 | `description` | string | (required) | Short description - used in meta tags, manifest, og:description |
-| `debug` | bool | (required) | Enable uvicorn `--reload` (hot-reload backend on file change). Disable in production. |
+| `debug` | bool | (required) | Reload the backend when a file under `backend/` changes (uvicorn reload, applied by `python -m backend.main` at start). The Docker update procedure (`git pull`, no restart) relies on it. |
 | `static_url_prefix` | string | (required) | URL prefix for frontend assets (e.g. `/frontend`). Requires server restart - not hot-reloadable. |
-| `log_level` | string | (required) | Logging verbosity: `"debug"`, `"info"`, `"warning"`, `"error"`. Controls both backend Python logs and browser console output. |
-| `site_url` | string | (required) | Public URL of the dashboard - used in CSP `base-uri`, webhook payloads, and as the example's extra WebSocket origin (`websocket.allowed_origins`). |
+| `log_level` | string | (required) | Logging verbosity: `"debug"`, `"info"`, `"warning"` or `"error"` (anything else fails validation). Controls both backend Python logs and browser console output. |
+| `site_url` | string | (required) | Public URL of the dashboard - used in CSP `base-uri`, webhook payloads, as the example's extra WebSocket origin (`websocket.allowed_origins`), and its host is always an accepted `Host` header (`server.allowed_hosts`). |
 | `vapid_email` | string | (required) | VAPID subject claim for web push (`mailto:` or `https:` URL). |
 
 ```yaml
@@ -75,6 +75,7 @@ app:
 | `max_connections` | int | (required) | Max concurrent HTTP connections (excess returns 503). Safety net - nginx is the primary limiter. |
 | `http_connect_timeout` | int | (required) | HTTP connect timeout in seconds (for outbound API requests to providers). |
 | `http_pool_max` | int | (required) | Max connections in the httpx connection pool. |
+| `allowed_hosts` | list[string] | (required) | Extra `Host` header names the server answers to. IP addresses, `localhost` and the host of `app.site_url` are always accepted, so local, LAN-by-IP and reverse-proxied access need no entry; add LAN or container names (`modelwatcher`, `nas.local`). `"*.example.com"` matches subdomains, `"*"` accepts any host. Any other `Host` gets `400 {"error": "Invalid host header"}` and a WebSocket is closed with 1008, which stops DNS-rebinding pages from reaching the API or the socket. Hot-reloadable. |
 
 ### `testing` - test scheduling and execution
 
@@ -162,7 +163,7 @@ Everything under `reconnect` and `unreachable`, plus `stale_after`, is the brows
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allowed_origins` | list[string] | (required) | Extra origins allowed to open the socket. A page served by this server (its `Origin` host equals the `Host` header) is always accepted, so local, LAN and reverse-proxied access need no entry. Empty list = every origin accepted (not recommended for production). Rejected origins are closed with code 1008. |
-| `heartbeat_interval` | number | (required) | Seconds between server `heartbeat` frames. Runs even with `MW_DISABLE_TESTS`, so a server with nothing to report still looks alive. Protocol-level ping/pong (the server dropping dead clients) is set by the uvicorn flags `--ws-ping-interval`/`--ws-ping-timeout` instead. |
+| `heartbeat_interval` | number | (required) | Seconds between server `heartbeat` frames. Runs even with `MW_DISABLE_TESTS`, so a server with nothing to report still looks alive. Protocol-level ping/pong (the server dropping dead clients) is `ping_interval`/`ping_timeout`. |
 | `stale_after` | number | (required) | Seconds without any frame after which the page closes the socket (code 4000) and reconnects. Must exceed `heartbeat_interval`; two to three heartbeats is a sensible window. |
 | `reconnect.min_delay` | number | (required) | First reconnect delay in seconds. It doubles for every attempt that never received a `hello`, and resets on the next `hello`. |
 | `reconnect.max_delay` | number | (required) | Reconnect delay cap in seconds; also the pace of retries after an origin rejection (1008). Must be >= `min_delay`. |
@@ -170,6 +171,8 @@ Everything under `reconnect` and `unreachable`, plus `stale_after`, is the brows
 | `unreachable.retry_interval` | number | (required) | While unreachable, seconds between liveness probes (`GET /health/live`) and the minimum socket reconnect delay. |
 | `max_message_bytes` | int | (required) | Largest client message accepted; bigger ones close the connection with code 1009. |
 | `sync_prefs_per_minute` | int | (required) | Notification-prefs syncs accepted per minute per connection; extra ones are ignored and logged. |
+| `ping_interval` | number | (required) | Seconds between protocol-level pings from the server. A reverse proxy's WebSocket read timeout must exceed it. Applied when the server starts (`python -m backend.main`); restart after changing it. |
+| `ping_timeout` | number | (required) | Seconds a client has to answer a ping before the server drops the connection. Applied at start, like `ping_interval`. |
 
 ### `notifications` - notification system
 
@@ -465,7 +468,7 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 ### Config file path overrides
 
-`MW_MODELS_YAML`, `MW_APP_YAML` and `MW_AUDITS_YAML` take a file name inside `config/`, and `MW_DB_NAME` one inside `data/`; any of them may also be an absolute path, which is how the tests and the browser-test harness run a server on files in a temp dir.
+`MW_MODELS_YAML`, `MW_APP_YAML` and `MW_AUDITS_YAML` take a file name inside `config/`, and `MW_DB_NAME` one inside `data/`; any of them may also be an absolute path, which is how the tests and the browser-test harness run a server on files in a temp dir. The config watcher watches exactly these files, and the `reset_epoch` rewrite edits the models file in use, wherever it lives.
 
 | Variable | Description |
 |----------|-------------|
@@ -478,6 +481,8 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 ### Server bind
 
+`python -m backend.main` is the one way to start the server (the Dockerfile `CMD` and the docs use it): it reads these variables, and reload (`app.debug`) and the WebSocket ping settings (`websocket.ping_interval`/`ping_timeout`) from `app.yaml`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOST` | `0.0.0.0` | Bind host |
@@ -488,7 +493,7 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 
 | Variable | Description |
 |----------|-------------|
-| `MW_DISABLE_TESTS` | Set to skip the test-driven background work: token encoder load, scheduler, BroadcastBatcher, config watcher, favicon and model-info fetches (for running diagnostics without triggering tests). Startup logs the skipped list. The WebSocket heartbeat keeps running. |
+| `MW_DISABLE_TESTS` | Set to run without testing providers or fetching from them: no scheduler, token encoder download, favicon or model-info fetch, at startup or after a config reload. Startup logs the skipped list. Config hot reload and the WebSocket heartbeat keep running. |
 
 | Variable | Description |
 |----------|-------------|
@@ -507,5 +512,5 @@ Names must match the `${VAR_NAME}` references in your `models.yaml`. These are e
 - **`metrics.uptime_window` and `recent_history`** - `uptime_window` (seconds) is the rolling window for uptime percentage. `recent_history` (duration) is the in-memory history cap, dynamically sized to cover both test intervals with a 1.2x buffer.
 - **`stalls.visible_threshold_ms` feeds `c.stall_visible_ms`** - Used in `compute_stream_metrics()` for ITL classification, jitter-adjusted at runtime.
 - **`time_ranges` is a list (not a mapping)** - Unlike other config sections which are mappings, `time_ranges` is a non-empty list of `{key, label}` objects.
-- **`reset_epoch` is stripped in-place** - When `reset_epoch: true` is set in `models.yaml`, `config.py` rewrites the file to remove the line after processing. This requires write access to `config/` (the `:rw` volume mount in the compose file).
+- **`reset_epoch` is stripped in-place** - When `reset_epoch: true` is set in the models file (`models.yaml` or the `MW_MODELS_YAML` override), `config.py` rewrites that file to remove the line after processing. This requires write access to it (the `:rw` volume mount of `config/` in the compose file).
 - **Environment variables are resolved at config load time** - `${VAR_NAME}` references in `models.yaml` are replaced with `os.environ.get(VAR_NAME)` when the config is loaded. If a variable is not set, the literal `${...}` string is kept (the provider will fail with an auth error). Changing env vars requires recreating the Docker container; changing config YAMLs hot-reloads.

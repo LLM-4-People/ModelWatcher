@@ -1,6 +1,6 @@
 # REST API reference
 
-ModelWatcher exposes 15 REST endpoints across 7 tags. Interactive documentation is available at runtime:
+ModelWatcher exposes 16 REST endpoints across 7 tags. Interactive documentation is available at runtime:
 
 - **Swagger UI**: `/api/docs`
 - **ReDoc**: `/api/redoc`
@@ -11,6 +11,7 @@ ModelWatcher exposes 15 REST endpoints across 7 tags. Interactive documentation 
 - **Base URL**: The host and port the server is bound to (e.g. `http://localhost:8080`).
 - **Content type**: All request and response bodies are `application/json`.
 - **Error format**: All errors return `{"error": "<message>"}` - including 422 validation errors and 404s. No `{"detail": [...]}` format is used anywhere.
+- **Host check**: requests whose `Host` header does not name the server (an IP address, `localhost`, the host of `app.site_url`, or an entry of `server.allowed_hosts`) get `400 {"error": "Invalid host header"}`; a WebSocket handshake is refused.
 - **Rate limiting**: Several endpoints are rate-limited (configured in `app.yaml` under `notifications.rate_limits`). Rate-limited responses return HTTP 429.
 
 ## Table of contents

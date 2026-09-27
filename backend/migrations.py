@@ -3,7 +3,7 @@
 Each migration is a numbered step that runs exactly once. The
 ``schema_migrations`` table records applied versions. On a fresh
 database the full schema (``db._SCHEMA_SQL``) already contains all
-current columns, so the probe-based column helpers silently skip the
+current columns, so the column helpers (``_table_columns``) skip the
 ALTERs - only the version record is inserted.
 
 To add a new migration:
@@ -27,20 +27,24 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    """Column names of a table (empty for a missing table), so migrations check instead of probing with errors."""
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def _migrate_columns(conn, table: str, probe_column: str,
                       columns: list[tuple[str, str]],
                       post_sql: list[str] | None = None,
                       label: str = ""):
-    try:
-        conn.execute(f"SELECT {probe_column} FROM {table} LIMIT 1")
-    except sqlite3.OperationalError:
-        for col_name, col_type in columns:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
-        for sql in (post_sql or []):
-            conn.execute(sql)
-        conn.commit()
-        names = ", ".join(c[0] for c in columns)
-        log.info("Migrated %s: added %s column%s", table, names, f" ({label})" if label else "")
+    if probe_column in _table_columns(conn, table):
+        return
+    for col_name, col_type in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+    for sql in (post_sql or []):
+        conn.execute(sql)
+    conn.commit()
+    names = ", ".join(c[0] for c in columns)
+    log.info("Migrated %s: added %s column%s", table, names, f" ({label})" if label else "")
 
 
 def _migration_test_type(conn: sqlite3.Connection):
@@ -105,24 +109,23 @@ def _migration_effective_itl(conn: sqlite3.Connection):
 
 
 def _migration_itl_renames(conn: sqlite3.Connection):
-    try:
-        conn.execute("SELECT raw_max_itl_ms FROM test_results LIMIT 1")
-    except sqlite3.OperationalError:
-        _itl_renames = [
-            ("max_itl_ms", "raw_max_itl_ms"),
-            ("median_itl_ms", "raw_median_itl_ms"),
-            ("avg_itl_ms", "raw_avg_itl_ms"),
-            ("p99_itl_ms", "raw_p99_itl_ms"),
-            ("itl_tail_ratio", "effective_itl_tail_ratio"),
-            ("itl_tail_ratio_estimated", "effective_itl_tail_ratio_estimated"),
-        ]
-        for old_col, new_col in _itl_renames:
-            try:
-                conn.execute(f"ALTER TABLE test_results RENAME COLUMN {old_col} TO {new_col}")
-            except sqlite3.OperationalError as e:
-                log.warning("Column rename %s -> %s skipped: %s", old_col, new_col, e)
-        conn.commit()
-        log.info("Migrated test_results: renamed ITL metric columns (max/median/avg/p99/tail_ratio)")
+    if "raw_max_itl_ms" in _table_columns(conn, "test_results"):
+        return
+    _itl_renames = [
+        ("max_itl_ms", "raw_max_itl_ms"),
+        ("median_itl_ms", "raw_median_itl_ms"),
+        ("avg_itl_ms", "raw_avg_itl_ms"),
+        ("p99_itl_ms", "raw_p99_itl_ms"),
+        ("itl_tail_ratio", "effective_itl_tail_ratio"),
+        ("itl_tail_ratio_estimated", "effective_itl_tail_ratio_estimated"),
+    ]
+    for old_col, new_col in _itl_renames:
+        try:
+            conn.execute(f"ALTER TABLE test_results RENAME COLUMN {old_col} TO {new_col}")
+        except sqlite3.OperationalError as e:
+            log.warning("Column rename %s -> %s skipped: %s", old_col, new_col, e)
+    conn.commit()
+    log.info("Migrated test_results: renamed ITL metric columns (max/median/avg/p99/tail_ratio)")
 
 
 def _migration_model_info_metadata(conn: sqlite3.Connection):
@@ -139,7 +142,7 @@ def _migration_model_info_metadata(conn: sqlite3.Connection):
 
 def _migration_model_info_extra_rename(conn: sqlite3.Connection):
     try:
-        cols = [row[1] for row in conn.execute("PRAGMA table_info(model_info)").fetchall()]
+        cols = _table_columns(conn, "model_info")
         if "extra" in cols and "description" not in cols:
             conn.execute("ALTER TABLE model_info RENAME COLUMN extra TO description")
             conn.commit()
@@ -197,11 +200,7 @@ def _migration_model_info_moe_detail(conn: sqlite3.Connection):
 
 
 def _migration_request_id(conn: sqlite3.Connection):
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(test_results)").fetchall()]
-    if "request_id" not in cols:
-        conn.execute("ALTER TABLE test_results ADD COLUMN request_id TEXT")
-        conn.commit()
-        log.info("Migrated test_results: added request_id column")
+    _migrate_columns(conn, "test_results", "request_id", [("request_id", "TEXT")])
 
 
 def _migration_probe_results(conn: sqlite3.Connection):
@@ -234,11 +233,7 @@ def _migration_probe_results(conn: sqlite3.Connection):
 
 
 def _migration_probe_add_success(conn: sqlite3.Connection):
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(probe_results)").fetchall()}
-    if "success" not in cols:
-        conn.execute("ALTER TABLE probe_results ADD COLUMN success INTEGER NOT NULL DEFAULT 0")
-        conn.commit()
-        log.info("Migrated: added success column to probe_results")
+    _migrate_columns(conn, "probe_results", "success", [("success", "INTEGER NOT NULL DEFAULT 0")])
 
 
 def _migration_probe_fingerprint(conn: sqlite3.Connection):
@@ -417,12 +412,10 @@ def _migration_fp_substructure(conn: sqlite3.Connection):
         ("probe_results", ("quantization TEXT", "fp_server TEXT", "fp_features TEXT")),
         ("model_info", ("fp_server TEXT", "fp_features TEXT")),
     ):
+        existing = _table_columns(conn, table)
         for col_def in cols:
-            col = col_def.split()[0]
-            try:
+            if col_def.split()[0] not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
-            except Exception:
-                pass
     conn.commit()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
@@ -519,9 +512,7 @@ def _migration_thinking_normalize(conn: sqlite3.Connection):
 
 def _migration_drop_ping_jitter(conn: sqlite3.Connection):
     """Drop the ping_jitter_ms column (PING system removed)."""
-    try:
-        conn.execute("SELECT ping_jitter_ms FROM test_results LIMIT 1")
-    except sqlite3.OperationalError:
+    if "ping_jitter_ms" not in _table_columns(conn, "test_results"):
         return
     conn.execute("ALTER TABLE test_results DROP COLUMN ping_jitter_ms")
     conn.commit()

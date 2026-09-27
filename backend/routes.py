@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 import time
+from pathlib import Path
 
 import orjson
 from fastapi import Request, Query
@@ -78,36 +79,47 @@ _static_version_cache: float | None = None
 _asset_fingerprint_cache: str | None = None
 
 
+def _mtime(path: Path) -> float | None:
+    """A frontend file's mtime; None when it does not exist (not built yet, or removed while scanning)."""
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    """A frontend file's content; None when it does not exist (see _mtime)."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _newest_mtime(root: Path, pattern: str) -> float:
+    """Newest mtime of the files under root that match pattern; 0.0 when there are none."""
+    return max((m for f in root.rglob(pattern) if f.is_file() and (m := _mtime(f)) is not None), default=0.0)
+
+
 def _static_version() -> float:
     """Mtime of the most recently modified file in FRONTEND_DIR."""
     global _static_version_cache
-    if _static_version_cache is not None:
-        return _static_version_cache
-    try:
-        fp = max(f.stat().st_mtime for f in st.FRONTEND_DIR.rglob("*") if f.is_file())
-    except (OSError, ValueError):
-        fp = 0.0
-    _static_version_cache = fp
-    return fp
+    if _static_version_cache is None:
+        _static_version_cache = _newest_mtime(st.FRONTEND_DIR, "*")
+    return _static_version_cache
 
 
 def _asset_fingerprint() -> str:
     """Content-hash fingerprint for all frontend assets (sw.js cache versioning)."""
     global _asset_fingerprint_cache
-    if _asset_fingerprint_cache is not None:
-        return _asset_fingerprint_cache
-    h = hashlib.sha1()
-    for f in sorted(st.FRONTEND_DIR.rglob("*")):
-        if not f.is_file():
-            continue
-        try:
-            h.update(f.relative_to(st.FRONTEND_DIR).as_posix().encode())
-            h.update(f.read_bytes())
-        except OSError:
-            pass
-    fp = h.hexdigest()[:16]
-    _asset_fingerprint_cache = fp
-    return fp
+    if _asset_fingerprint_cache is None:
+        h = hashlib.sha1()
+        for f in sorted(st.FRONTEND_DIR.rglob("*")):
+            body = _read_bytes(f) if f.is_file() else None
+            if body is not None:
+                h.update(f.relative_to(st.FRONTEND_DIR).as_posix().encode())
+                h.update(body)
+        _asset_fingerprint_cache = h.hexdigest()[:16]
+    return _asset_fingerprint_cache
 
 
 def _file_version(path_suffix: str) -> str:
@@ -127,18 +139,17 @@ def _file_version(path_suffix: str) -> str:
     """
     f = st.BUILT_CSS_PATH if path_suffix == st.BUILT_CSS_NAME else st.FRONTEND_DIR / path_suffix
     is_js = path_suffix.startswith("js/") and path_suffix.endswith(".js")
-    try:
-        mt = f.stat().st_mtime
-    except (OSError, FileNotFoundError):
+    mt = _mtime(f)
+    if mt is None:
         return str(_static_version())
     jmt = _js_max_mtime() if is_js else 0.0
     cached = _file_version_cache.get(path_suffix)
     if cached and cached[0] == mt and cached[2] == jmt:
         return cached[1]
-    try:
-        h = _short_hash(f.read_bytes())
-    except (FileNotFoundError, OSError):
+    body = _read_bytes(f)
+    if body is None:
         return str(_static_version())
+    h = _short_hash(body)
     if is_js and jmt:
         h = _short_hash((h + str(jmt)).encode())
     _file_version_cache[path_suffix] = (mt, h, jmt)
@@ -147,11 +158,11 @@ def _file_version(path_suffix: str) -> str:
 
 def _safe_frontend_file(path_suffix: str, *, required_root=None, suffixes: frozenset[str] | None = None):
     """Resolve a frontend-relative path and reject traversal outside required_root."""
+    if "\x00" in path_suffix:  # client input; resolve() would raise on it
+        return None
     root = (required_root or st.FRONTEND_DIR).resolve()
-    try:
-        path = (st.FRONTEND_DIR / path_suffix).resolve()
-        path.relative_to(root)
-    except (OSError, ValueError):
+    path = (st.FRONTEND_DIR / path_suffix).resolve()
+    if not path.is_relative_to(root):
         return None
     if suffixes and path.suffix.lower() not in suffixes:
         return None
@@ -163,14 +174,35 @@ def _safe_frontend_file(path_suffix: str, *, required_root=None, suffixes: froze
 _JS_FROM_RE = re.compile(r"""(from\s+)(['"])(\.[^'"]+\.js)\2""")
 _JS_DYNAMIC_RE = re.compile(r"""(import\(\s*)(['"])(\.[^'"]+\.js)\2""")
 _js_rewrite_cache: dict[str, tuple[float, float, bytes]] = {}
+_JS_ENTRY = "js/app.js"
+
+
+def module_preload_order() -> list[str]:
+    """Frontend paths of every module the entry module loads statically, dependencies first.
+
+    Follows the same `from '...'` specifiers that _rewrite_js_imports versions, so a new
+    module is preloaded without editing a list (finding F36: a hand-kept list missed conn.js
+    and filter.js). Targets of dynamic import() load on demand and stay out.
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def visit(rel: str):
+        if rel in seen:
+            return
+        seen.add(rel)
+        path = st.FRONTEND_DIR / rel
+        for m in _JS_FROM_RE.finditer(path.read_text()):
+            visit((path.parent / m.group(3)).resolve().relative_to(st.FRONTEND_DIR).as_posix())
+        order.append(rel)
+
+    visit(_JS_ENTRY)
+    return order
 
 
 def _js_max_mtime() -> float:
     """Max mtime of all files in frontend/js/ - any JS change invalidates all rewrites."""
-    try:
-        return max(f.stat().st_mtime for f in (st.FRONTEND_DIR / "js").rglob("*.js") if f.is_file())
-    except (OSError, ValueError):
-        return 0.0
+    return _newest_mtime(st.FRONTEND_DIR / "js", "*.js")
 
 
 def _rewrite_js_imports(content: bytes, path_suffix: str) -> bytes:
@@ -188,11 +220,9 @@ def _rewrite_js_imports(content: bytes, path_suffix: str) -> bytes:
         quote = m.group(2)
         specifier = m.group(3)
         target = (file_dir / specifier).resolve()
-        try:
-            rel = target.relative_to(st.FRONTEND_DIR)
-        except ValueError:
+        if not target.is_relative_to(st.FRONTEND_DIR):
             return m.group(0)
-        target_suffix = str(rel).replace("\\", "/")
+        target_suffix = target.relative_to(st.FRONTEND_DIR).as_posix()
         v = _file_version(target_suffix)
         return f"{prefix}{quote}{specifier}?v={v}{quote}"
 
@@ -215,10 +245,7 @@ def serve_js(request: Request, path_suffix: str) -> Response:
     )
     if f is None:
         return Response(status_code=404)
-    try:
-        mt = f.stat().st_mtime
-    except OSError:
-        mt = 0
+    mt = _mtime(f)
     jmt = _js_max_mtime()
     cached = _js_rewrite_cache.get(path_suffix)
     if cached and cached[0] == mt and cached[1] == jmt:
@@ -244,7 +271,6 @@ def _replace_placeholders(text: str) -> str:
     return text
 
 
-_CONSOLE_LEVELS = {"debug": 0, "info": 1, "warning": 2, "error": 3}
 _METRICS_RESPONSE_TYPES = frozenset({"card", "modal", "history"})
 _TEST_TYPES = frozenset((st.TEST_BENCHMARK, st.TEST_HEALTH))
 _CHART_VIEWS = frozenset({"speed", "consistency", "scores", "health"})
@@ -356,22 +382,8 @@ def index(request: Request):
 
     html = _get_prefix_re(r'((?:href|src)="){}/([^"]+)"').sub(_version_replacer, html)
 
-    _MODULE_PRELOAD_ORDER = [
-        "state", "utils",
-        "format", "api",
-        "tooltips", "cache",
-        "chart", "dom",
-        "modal-loader",
-        "prefs", "notifications",
-        "help", "ws",
-        "frame", "theme",
-        "app",
-    ]
-    preload_tags = []
-    for m in _MODULE_PRELOAD_ORDER:
-        v = _file_version(f"js/{m}.js")
-        preload_tags.append(f'<link rel="modulepreload" href="{prefix}/js/{m}.js?v={v}">')
-    preload_block = "\n".join(preload_tags)
+    preload_block = "\n".join(f'<link rel="modulepreload" href="{prefix}/{rel}?v={_file_version(rel)}">'
+                              for rel in module_preload_order())
     html = html.replace('<script type="module"', preload_block + "\n<script type=\"module\"", 1)
     if nonce:
         # FOUC prevention - inject blocking script + style immediately after <head>
@@ -404,7 +416,7 @@ def index(request: Request):
             '})()</script>'
         )
         html = html.replace('<head>', '<head>' + bell_fouc_css + fouc_script, 1)
-        _console_level = _CONSOLE_LEVELS.get(st.c.log_level, 2)
+        _console_level = st.LOG_LEVELS.index(st.c.log_level)
         html = html.replace(
             '</head>',
             f'<script nonce="{nonce}">window.__STATIC_PREFIX__="{prefix}";window.__APP_NAME__={orjson.dumps(st.c.app_name).decode()};'
@@ -621,8 +633,13 @@ def health_check():
     models_ok = st._healthy_model_count
     models_total = len(st.model_registry)
     healthy = alive and models_total > 0 and models_ok > 0
-    if not healthy:
-        st.log.warning("Health check failing: scheduler_running=%s, models_ok=%d, models_total=%d", alive, models_ok, models_total)
+    # Docker polls this every 30s: log when readiness changes, not on every failing poll (F18)
+    if st.condition_changed("readiness", not healthy):
+        if healthy:
+            st.log.info("Health check passing again")
+        else:
+            st.log.warning("Health check failing: scheduler_running=%s, models_ok=%d, models_total=%d",
+                           alive, models_ok, models_total)
     return JSONResponse(
         status_code=200 if healthy else 503,
         content={"status": "healthy" if healthy else "degraded"},
@@ -699,24 +716,28 @@ async def get_model_info(request: Request, model: str = Query(default=None, max_
     return _etag_response(request, body=st.model_info_response_cache["raw"], etag=st.model_info_response_cache["etag"])
 
 def built_css():
+    # Every page load requests it: log when it becomes unreadable and when it is back,
+    # not on every request, and without a traceback that adds nothing to the path (F44)
+    condition = f"built_css:{st.BUILT_CSS_PATH}"
     try:
         body = st.BUILT_CSS_PATH.read_bytes()
     except OSError as e:
-        st.log_error(
-            f"Built CSS unreadable at {st.BUILT_CSS_PATH} - run `{st.BUILT_CSS_BUILD_CMD}` "
-            "or point MW_BUILT_CSS_PATH at the built file", e,
-        )
+        if st.condition_changed(condition, True):
+            st.log.error("Built CSS unreadable at %s (%s) - run `%s` or point MW_BUILT_CSS_PATH at the built file",
+                         st.BUILT_CSS_PATH, e.strerror or e, st.BUILT_CSS_BUILD_CMD)
         return error_response("Stylesheet not built", 404)
+    if st.condition_changed(condition, False):
+        st.log.info("Built CSS readable again at %s", st.BUILT_CSS_PATH)
     return Response(content=body, media_type="text/css")
 
 
 async def handle_client_error(request: Request, body: ClientErrorBody):
     """POST /api/client-error - Receive client-side error reports.
 
-    Rate limited per-IP (10/min). Logs the error with context for server-side
-    observability.
+    Rate limited per IP (notifications.rate_limits.client_error_per_minute). Logs the
+    error with context for server-side observability.
     """
-    rl = check_rate_limit(_client_error_times, client_ip(request), 60, c.notif_rate_limit_client_error)
+    rl = check_rate_limit(_client_error_times, client_ip(request), 60, st.c.notif_rate_limit_client_error)
     if rl:
         return rl
     msg = body.message[:500]

@@ -2,3 +2,4 @@
 # Install locally inside the project virtualenv - see docs/DEVELOPMENT.md#install-dependencies
 -r requirements.txt
 pytest
+pyflakes

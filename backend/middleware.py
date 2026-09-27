@@ -1,4 +1,4 @@
-"""Custom ASGI middleware: connection limiting, request size limiting, security headers.
+"""Custom ASGI middleware: connection limiting, request size limiting, Host check, security headers.
 
 SecurityHeadersMiddleware also sets per-path cache policies and injects
 CSP with a per-request nonce for HTML/SW responses.
@@ -12,6 +12,7 @@ from backend.state import c, MAX_REQUEST_BODY_BYTES
 import backend.state as st
 
 _BODY_TOO_LARGE = JSONResponse(status_code=413, content={"error": "Request body too large"})
+_BAD_HOST = JSONResponse(status_code=400, content={"error": "Invalid host header"})
 
 
 class RequestSizeLimitMiddleware:
@@ -37,7 +38,7 @@ class RequestSizeLimitMiddleware:
                     if int(value) > MAX_REQUEST_BODY_BYTES:
                         await _BODY_TOO_LARGE(scope, receive, send)
                         return
-                except (ValueError, TypeError):
+                except ValueError:
                     pass
                 break
 
@@ -63,6 +64,61 @@ class RequestSizeLimitMiddleware:
 
 class _BodyTooLargeError(Exception):
     pass
+
+
+def _host_name(host_header: str) -> str:
+    """The Host header without its port, lower-cased, IPv6 brackets removed ('' when malformed)."""
+    host = host_header.strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else ""
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def host_allowed(host_header: str) -> bool:
+    """Whether a Host header names this server.
+
+    IP addresses and localhost always do: a DNS-rebinding page reaches the server under
+    the attacker's host name, never under an address. So does the host of app.site_url;
+    server.allowed_hosts adds names ("*.example.com" for subdomains, "*" for any host).
+    """
+    host = _host_name(host_header)
+    if not host:
+        return False
+    if st.is_ip_literal(host) or host in ("localhost", c.site_host):
+        return True
+    return any(pattern == "*" or host == pattern or (pattern.startswith("*.") and host.endswith(pattern[1:]))
+               for pattern in c.allowed_hosts)
+
+
+class HostCheckMiddleware:
+    """Reject requests and WebSockets whose Host header does not name this server (finding F48).
+
+    The WebSocket same-origin rule trusts the Host header, and a DNS-rebinding page is
+    same-origin by construction, so the Host itself is checked here, for HTTP and WS alike.
+    Rejections: HTTP 400 with the usual error body; a WebSocket is closed with 1008 before
+    it is accepted (the handshake fails with 403).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            host = next((v.decode("latin-1") for k, v in scope.get("headers", []) if k == b"host"), "")
+            if not host_allowed(host):
+                # Client-controlled: warn once with the fix, then keep the log quiet
+                if st.condition_changed("host_rejected", True):
+                    st.log.warning("Rejected Host header %r - add it to server.allowed_hosts if it names this server "
+                                   "(later rejections log at debug level)", host[:100])
+                else:
+                    st.log.debug("Rejected Host header %r", host[:100])
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await _BAD_HOST(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class ConnectionLimiterMiddleware:

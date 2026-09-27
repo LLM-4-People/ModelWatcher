@@ -3,11 +3,11 @@
 Catches finding F3: backend/state.py defaulted MW_BUILT_CSS_PATH to the Docker
 location, so following DEVELOPMENT.md (npm run build:css, then uvicorn) served no
 stylesheet; the build output was not gitignored; a missing file surfaced only as
-a bare error response.
+a bare error response. And F44: the missing file then logged a full traceback on
+every page load.
 """
 import json
 import logging
-import re
 import shlex
 from pathlib import PurePosixPath
 
@@ -29,24 +29,6 @@ def _flag(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
 
 
-def _dockerfile_stages() -> dict[str, list[tuple[str, str]]]:
-    """Map each stage alias (or 'final') to its (INSTRUCTION, arguments) list."""
-    text = re.sub(r"\\\n", " ", (st.BASE_DIR / "Dockerfile").read_text())
-    stages: dict[str, list[tuple[str, str]]] = {}
-    current: list[tuple[str, str]] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        instr, _, args = line.partition(" ")
-        instr = instr.upper()
-        if instr == "FROM":
-            parts = args.split()
-            current = stages.setdefault(parts[2] if len(parts) > 2 and parts[1].upper() == "AS" else "final", [])
-        current.append((instr, args.strip()))
-    return stages
-
-
 @pytest.mark.parametrize("script", [BUILD_SCRIPT, "watch:css"])
 def test_npm_scripts_write_the_served_path(script):
     args = _npm_script_args(script)
@@ -66,8 +48,8 @@ def test_env_overrides_path(run_python, tmp_path):
     assert out == str(override)
 
 
-def test_dockerfile_builds_and_points_at_the_same_file():
-    stages = _dockerfile_stages()
+def test_dockerfile_builds_and_points_at_the_same_file(dockerfile_stages):
+    stages = dockerfile_stages
     builder = stages["css-builder"]
     workdir = [a for i, a in builder if i == "WORKDIR"][-1]
     assert any(i == "RUN" and st.BUILT_CSS_BUILD_CMD in a for i, a in builder)
@@ -93,15 +75,25 @@ def test_build_output_is_ignored(git_ignored):
     assert BUILT_CSS_REL in (st.BASE_DIR / ".dockerignore").read_text().splitlines()
 
 
-def test_missing_file_logs_path_and_build_command(monkeypatch, tmp_path, caplog):
+def test_missing_file_logs_path_and_build_command_once(monkeypatch, tmp_path, caplog):
+    """F44: every page load requests the stylesheet; a missing build logs once, not per request."""
     missing = tmp_path / "absent.css"
     monkeypatch.setattr(st, "BUILT_CSS_PATH", missing)
-    with caplog.at_level(logging.ERROR, logger=st.log.name):
-        resp = routes.built_css()
-    assert resp.status_code == 404
-    assert json.loads(resp.body) == {"error": "Stylesheet not built"}
-    message = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
-    assert str(missing) in message and st.BUILT_CSS_BUILD_CMD in message
+    monkeypatch.setattr(st, "_failing_conditions", set())
+    with caplog.at_level(logging.INFO, logger=st.log.name):
+        responses = [routes.built_css() for _ in range(3)]
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        missing.write_bytes(b"body{}")
+        assert routes.built_css().status_code == 200
+        missing.unlink()
+        routes.built_css()
+    assert {r.status_code for r in responses} == {404}
+    assert all(json.loads(r.body) == {"error": "Stylesheet not built"} for r in responses)
+    assert len(errors) == 1, "one log line per outage, not per request"
+    assert str(missing) in errors[0].getMessage() and st.BUILT_CSS_BUILD_CMD in errors[0].getMessage()
+    assert errors[0].exc_info is None, "a missing file needs its path, not a traceback"
+    levels = [r.levelno for r in caplog.records]
+    assert levels == [logging.ERROR, logging.INFO, logging.ERROR], "logged again after it came back and went missing"
 
 
 def test_served_file_and_version_hash_share_one_path(monkeypatch, tmp_path):

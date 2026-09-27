@@ -201,7 +201,7 @@ def _looks_like_json(text: str) -> bool:
     try:
         json.loads(text)
         return True
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return False
 
 
@@ -244,7 +244,7 @@ async def _probe_json_mode(client, base_url: str, headers: dict, model_id: str,
     try:
         content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
         return _looks_like_json(content), resp
-    except (IndexError, KeyError, TypeError):
+    except (IndexError, TypeError):
         return False, resp
 
 

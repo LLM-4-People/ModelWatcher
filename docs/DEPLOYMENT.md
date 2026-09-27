@@ -118,7 +118,7 @@ The dashboard is available at `http://localhost:8080`.
 
 | Mount | Mode | Purpose |
 |-------|------|---------|
-| `/path/to/ModelWatcher:/app:ro` | read-only | Application code (backend, frontend, etc.). uvicorn `--reload` watches via inotify and works on read-only mounts. |
+| `/path/to/ModelWatcher:/app:ro` | read-only | Application code (backend, frontend, etc.). The code reload (`app.debug`) watches via inotify and works on read-only mounts. |
 | `/path/to/ModelWatcher/config:/app/config:rw` | read-write | Config files. `config.py` strips `reset_epoch: true` from `models.yaml` in-place after processing. |
 | `/path/to/ModelWatcher/data:/app/data:rw` | read-write | SQLite database (`metrics.db` + WAL files), VAPID keys, cached favicons, tiktoken encoding cache (`data/tiktoken`). |
 
@@ -136,7 +136,7 @@ Environment variables (`.env.modelwatcher`) are read by Docker Compose at contai
 docker compose -f compose.yaml up -d --build
 ```
 
-The `--reload` flag only watches `backend/` source files and `config/*.yaml` for changes. It does not re-read environment variables.
+Code reload (`app.debug`) watches `backend/` and the config watcher the loaded config files; neither re-reads environment variables.
 
 ### Adding a new provider (operational workflow)
 
@@ -165,7 +165,7 @@ The `--reload` flag only watches `backend/` source files and `config/*.yaml` for
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `HOST` | `0.0.0.0` | Bind host (container-internal; always `0.0.0.0` for Docker) |
+| `HOST` | `0.0.0.0` | Bind host (container-internal; always `0.0.0.0` for Docker). The image starts `python -m backend.main`, which reads `HOST`, `PORT` and `FORWARDED_ALLOW_IPS`. |
 | `PORT` | `8080` | Bind port |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Trusted proxy IPs for `X-Forwarded-*` headers. Set to your nginx proxy IP when behind a reverse proxy. |
 | `TZ` | `UTC` | Timezone. `tzdata` is installed in the Docker image. Set to your local timezone (e.g. `America/Toronto`) for correct log timestamps. |
@@ -179,7 +179,7 @@ Set one per provider referenced in `config/models.yaml` via `${VAR_NAME}` syntax
 
 | Variable | Description |
 |----------|-------------|
-| `MW_DISABLE_TESTS` | Set to skip scheduler, model_info, favicons, config_watcher, and BroadcastBatcher tasks. For running diagnostics without triggering tests. |
+| `MW_DISABLE_TESTS` | Set to run without testing or contacting providers: no scheduler, token encoder download, favicon or model-info fetch, at startup or after a config reload. Config hot reload keeps working. For running diagnostics without triggering tests. |
 
 ### Config overrides
 
@@ -229,14 +229,14 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket timeout (should exceed uvicorn --ws-ping-timeout of 90s)
+        # Must exceed websocket.ping_interval (the server pings at least that often)
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
 }
 ```
 
-The WebSocket origin check always accepts pages whose `Origin` host equals the `Host` header the server receives, so keep forwarding `Host`. `$host` drops the port; if the dashboard is published on a non-default port, forward `$http_host` instead, or list the public origin in `websocket.allowed_origins`.
+The server answers only `Host` headers that name it: IP addresses, `localhost`, the host of `app.site_url`, and `server.allowed_hosts`; anything else gets 400, which stops DNS-rebinding pages. The WebSocket origin check then accepts pages whose `Origin` host equals that `Host` header. So keep forwarding `Host`, and make `app.site_url` the public URL. `$host` drops the port; if the dashboard is published on a non-default port, forward `$http_host` instead, or list the public origin in `websocket.allowed_origins`.
 
 Set `FORWARDED_ALLOW_IPS` to your nginx server's IP (e.g. `127.0.0.1` if nginx is on the same host) so uvicorn trusts the `X-Forwarded-*` headers.
 
@@ -290,12 +290,12 @@ Users can install the app via the browser's "Install app" / "Add to home screen"
 
 ## Updating
 
-The Docker image runs uvicorn with `--reload`, which watches the `backend/` directory for file changes. To update:
+With `app.debug: true` (the example's setting) the server reloads when a file under `backend/` changes. To update:
 
 ```bash
 cd /path/to/ModelWatcher
 git pull origin main
-# uvicorn hot-reloads on backend/ file changes - no restart needed
+# the backend reloads on backend/ file changes (app.debug) - no restart needed
 # For frontend CSS changes, rebuild the CSS:
 #   Npm run build:css
 # For frontend jS/HTML changes, the browser auto-reloads via service worker / deploy-version polling

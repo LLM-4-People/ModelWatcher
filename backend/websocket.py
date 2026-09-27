@@ -11,6 +11,7 @@ import asyncio
 
 import orjson
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnected
 
 import backend.state as st
 from backend.state import c, log, sanitize_prefs
@@ -29,6 +30,8 @@ CLOSE_CODES = {
 }
 
 _HEARTBEAT = {"type": "heartbeat"}
+# What Starlette raises when a client left first: sending on a closed socket, or a dead transport (1006)
+_CLIENT_GONE = (WebSocketDisconnected, WebSocketDisconnect)
 
 
 def connection_config() -> dict:
@@ -96,7 +99,8 @@ class WSManager:
             async def _send(w=ws):
                 try:
                     await w.send_text(data)
-                except RuntimeError:
+                except _CLIENT_GONE as e:
+                    log.debug("WS broadcast: dropping a closed socket (%s)", type(e).__name__)
                     dead.append(w)
                 except Exception as e:
                     log.warning("WS broadcast send failed: %s", e)
@@ -136,15 +140,17 @@ class WSManager:
         conns = list(self.connections)
         self.connections.clear()
         self._prefs.clear()
-        fail_count = 0
+        gone = 0
         for ws in conns:
             try:
                 await ws.close(code=CLOSE_CODES["restart"], reason="server restarting")
+            except _CLIENT_GONE as e:
+                log.debug("WS close_all: client already gone (%s)", type(e).__name__)
+                gone += 1
             except Exception as e:
-                log.debug("WS close_all: close failed: %s", e)
-                fail_count += 1
-        if fail_count:
-            log.warning("WS close_all: %d/%d connections failed to close", fail_count, len(conns))
+                st.log_error("WS close_all: close failed", e)
+        if gone:
+            log.info("WS close_all: %d/%d clients had already disconnected", gone, len(conns))
 
 
 ws_mgr = WSManager()

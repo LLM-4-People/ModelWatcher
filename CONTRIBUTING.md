@@ -25,7 +25,7 @@ Thank you for your interest in contributing. This guide covers the essentials.
 - Follow PEP 8
 - No hardcoded defaults for config values - all tuning comes from `config/app.yaml` via `st.c.*` access
 - Error responses must use `{"error": "message"}` format (enforced by exception handlers in `main.py`)
-- All `except` blocks must call `log_error()` or re-raise - never silently swallow
+- All `except` blocks must re-raise or log through `backend.state`: `log_error()` for unexpected failures, `log.warning`/`log.info`/`log.debug` for expected ones. A broad catch (`except Exception`, bare `except`) needs `log_error()` or at least `log.warning`. Control flow (an expected exception turned into a normal result, such as a parse helper or a 400 answer) goes into the documented allowlist in `test_error_logging.py`, which enforces the rule
 - Shared state primitives use `import backend.state as st` and `st.variable = value` (never `from backend.state import x` then rebind)
 - Named exports only in ES modules - no default exports
 

@@ -12,6 +12,7 @@ patterns; unknown paths are silently ignored.
 
 import asyncio
 import re
+from datetime import datetime
 
 import backend.state as st
 from backend.state import MODEL_INFO_FIELDS as _METADATA_FIELDS, log, log_error
@@ -201,13 +202,10 @@ def _param_count_from_str(v) -> str | None:
     n = _as_int(v.replace(",", ""))
     if n is not None and n > 0:
         return _fmt_params(n)
-    try:
-        val = float(v)
-        if val > 0:
-            return _fmt_params(int(val))
-    except (ValueError, TypeError):
-        pass
-    return v if v else None
+    val = _as_float(v)
+    if val is not None and val > 0:
+        return _fmt_params(int(val))
+    return v
 
 
 def _flatten(obj, prefix: str = "") -> dict[str, object]:
@@ -999,10 +997,8 @@ async def _fetch_hf_model(model_id: str) -> dict | None:
         created_at = data.get("createdAt")
         if created_at and isinstance(created_at, str) and "created" not in result:
             try:
-                from datetime import datetime
-                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                result["created"] = dt.timestamp()
-            except (ValueError, TypeError):
+                result["created"] = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            except ValueError:
                 pass
 
         siblings = data.get("siblings") or []

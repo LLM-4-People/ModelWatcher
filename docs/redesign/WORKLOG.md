@@ -53,6 +53,15 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - Added the JS unit and browser test layers (npm `test:js`, `test:e2e`), `test_websocket.py` and `test_frontend_rules.py`. Every new test was mutation-checked against the old code.
 - Registered F14 to F22; F14 (silent JS catches) and F15 (seeder output locations) fixed on the way.
 
+### Round 4 - backend and config group
+
+- F11 first, in a commit of its own: `.gitattributes` with `* text=auto eol=lf` and a renormalisation whose diff is empty under `--ignore-cr-at-eol`.
+- Then F9, F10, F12, F13, F16, F18, F21, F36, F37, F41, F44, F46, F47, F48, the backend half of F45, F66 (found here independently) and the new F97. Each was reproduced first, and each test was mutation-checked against the old code.
+- New shared pieces: `st.condition_changed()` (log a recurring problem on change), `st.is_ip_literal()`, `st.TESTS_DISABLED`, `st.LOG_LEVELS`, `config.config_path()`, `config._require_keys()`, `main.server_options()` behind `python -m backend.main` (the one launch path: Dockerfile, docs, seeder, browser tests), `HostCheckMiddleware`, `routes.module_preload_order()`, `migrations._table_columns()`, and the conftest `git` and `dockerfile_stages` fixtures.
+- New config keys `server.allowed_hosts`, `websocket.ping_interval`, `websocket.ping_timeout`; new dependencies `publicsuffixlist` (runtime, bundles the list) and `pyflakes` (dev, undefined-name guard).
+- The backend `except` rule now matches the frontend one and is enforced for every handler, with a keyed, documented control-flow allowlist.
+- Checked live on a private instance (8093): a rebinding `Host` got 400 and a refused WebSocket, client error reports answered 200, the preload list held all 20 static modules, three stylesheet misses logged once, and a config edit hot-reloaded with `MW_DISABLE_TESTS`.
+
 ### Process notes
 
 - Every writer round ends with an independent read-only verifier that reproduces the original failures, mutation-checks the new tests and reviews the diff against the rules. Round 1 of this found a regression the writer's own tests missed, so the step stays.
@@ -66,4 +75,6 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - `page.clock` cannot stand in for a server heartbeat: fast-forwarding fires the client's stale timer before any real frame arrives. Shorten the real timings in the server config instead (`--app-set websocket.heartbeat_interval=...`).
 - Node 22's `node --test` does not search a directory argument; pass a quoted glob (`'tests/js/*.test.mjs'`).
 - Starlette's `TestClient` runs the app's lifespan in its own loop, so heartbeat and startup behaviour are tested with the real app in a subprocess (`run_python`) rather than by importing `backend.main` into the pytest process, which would load config at import.
-
+- Starlette's `TestClient.websocket_connect` ignores `base_url` and always sends `Host: testserver`; pass an absolute `ws://host/...` URL when the Host matters. The real app only answers names that name it (F48), so tests against `backend.main` use `base_url="http://localhost"`.
+- SQLite's trace callback never sees a statement that fails to prepare, which is exactly the swallowed kind; record statements at `execute()` (a small proxy) to prove none is issued.
+- The register can grow while a round runs (F49 to F96 arrived during round 4). Edit it with targeted replacements on a fresh read, take the next free ID only after re-reading, and check `git diff` shows no lost lines.

@@ -153,7 +153,7 @@ class BroadcastBatcher(PeriodicBatcher):
     Notifications remain immediate (they are low-volume and time-sensitive).
     """
 
-    def __init__(self, flush_interval: float = 2.0):
+    def __init__(self, flush_interval: float):
         super().__init__(flush_interval)
         self._pending: dict[str, dict] = {}
 

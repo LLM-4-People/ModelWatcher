@@ -142,7 +142,7 @@ def _parse_tool_args(response: dict) -> dict:
         if isinstance(args, str):
             try:
                 fn["arguments"] = json.loads(args)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 pass
     return response
 
@@ -198,7 +198,7 @@ def _parse_synbad_output(stdout: str, stderr: str) -> dict:
                 raw = "\n".join(response_buf)
                 try:
                     current_response = _parse_tool_args(json.loads(raw))
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     current_response = raw[:_MAX_RESPONSE_LEN]
                 in_response = False
                 response_buf = []
@@ -296,18 +296,18 @@ async def _run_synbad_suite(provider: dict, model_id: str, model_key: str) -> di
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=st.c.test_timeout)
     except asyncio.TimeoutError:
+        st.log.warning("SynBad %s: no result within testing.timeout (%ss) - killed", model_id, st.c.test_timeout)
         try:
             proc.kill()
-        except Exception:
+        except ProcessLookupError:
             pass
-        try:
-            await proc.wait()
-        except Exception:
-            pass
+        await proc.wait()
         duration_ms = round((time.monotonic() - start) * 1000)
         return {**_ERR_BASE, "duration_ms": duration_ms, "error": "timeout",
                 "suite_version": version, "params": params}
     except (FileNotFoundError, PermissionError) as exc:
+        # The binary exists (checked above), so the install is broken: an operator problem
+        st.log_error(f"SynBad could not start {_SYNBAD_BIN}", exc)
         duration_ms = round((time.monotonic() - start) * 1000)
         return {**_ERR_BASE, "duration_ms": duration_ms, "error": f"synbad: {exc}",
                 "suite_version": version, "params": params}

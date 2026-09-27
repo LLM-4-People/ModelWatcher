@@ -20,6 +20,8 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 
+from publicsuffixlist import PublicSuffixList
+
 import backend.state as st
 import backend.db as db
 
@@ -46,26 +48,28 @@ _HREF_RE = re.compile(r'href\s*=\s*(?:["\']([^"\']*)["\']|([^\s>]+))', re.IGNORE
 _SIZES_RE = re.compile(r'sizes\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 _SVG_SIGNATURES = (b"<?xm", b"<svg")
 _TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+# Bundled with the package (no download); upgrading the package updates the list
+_PUBLIC_SUFFIXES = PublicSuffixList()
 
 
 def root_url(base_url: str) -> str:
-    """Extract scheme + registered domain from a URL, stripping subdomains and path.
+    """The provider's homepage for an API URL: scheme plus registrable domain, no subdomain or path.
 
-    Takes the last 2 netloc parts (domain + TLD), which works for all
-    common domain structures but fails on multi-part TLDs (e.g. .co.uk).
-    No current provider uses a multi-part TLD.
+    The registrable domain comes from the Public Suffix List, so multi-part suffixes
+    (api.example.co.uk -> example.co.uk) and hosted suffixes (foo.vercel.app) stay whole.
+    Hosts without one, IP literals and single-label names such as localhost, are kept
+    with their port: they are the server itself (finding F12). The port is dropped only
+    when the host changes, since it belongs to the API server, not to the homepage.
 
-    Examples: https://api.deepseek.com/v1 → https://deepseek.com
-              https://nano-gpt.com/api/v1 → https://nano-gpt.com
-              https://inference.api.novita.ai/v3 → https://novita.ai
+    Examples: https://api.deepseek.com/v1 -> https://deepseek.com
+              https://inference.api.novita.ai/v3 -> https://novita.ai
+              https://127.0.0.1:9/v1 -> https://127.0.0.1:9
     """
-    # Defense-in-depth: config.py normalizes scheme at load, but root_url()
-    # may be called from other paths that skip that normalization.
-    if "://" not in base_url:
-        base_url = f"https://{base_url}"
-    parsed = urlparse(base_url)
-    parts = parsed.netloc.split(".")
-    domain = ".".join(parts[-2:]) if len(parts) > 2 else parsed.netloc
+    parsed = urlparse(st.ensure_scheme(base_url))
+    host = parsed.hostname or ""
+    domain = None if st.is_ip_literal(host) else _PUBLIC_SUFFIXES.privatesuffix(host)
+    if domain is None or domain == host:
+        return f"{parsed.scheme}://{parsed.netloc.rpartition('@')[2]}"
     return f"{parsed.scheme}://{domain}"
 
 
@@ -129,7 +133,7 @@ def _icon_priority(tag: str, href: str) -> int:
         try:
             w = int(sizes.group(1).split("x")[0])
             return abs(w - 32) + 1
-        except (ValueError, IndexError):
+        except ValueError:
             pass
     if ext in (".png", ".webp"):
         return 50

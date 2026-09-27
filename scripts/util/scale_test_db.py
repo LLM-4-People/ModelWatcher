@@ -356,7 +356,7 @@ def main(argv: list[str] | None = None):
     in_place = (args.data_dir.resolve(), args.config_dir.resolve()) == (st.DATA_DIR, st.CONFIG_DIR)
     st.log.info(
         "Start the server with: MW_DB_NAME=%s MW_MODELS_YAML=%s MW_APP_YAML=%s %s=dummy MW_DISABLE_TESTS=1 "
-        "python3 -m uvicorn backend.main:app --port 8080",
+        "PORT=8080 python3 -m backend.main",
         *((args.db_name, args.models_yaml, args.app_yaml) if in_place else (db_path.resolve(), models_yaml.resolve(), app_yaml.resolve())),
         API_KEY_ENV,
     )

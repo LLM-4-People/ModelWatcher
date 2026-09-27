@@ -247,7 +247,7 @@ No error is ever silently swallowed. Both frontend and backend use three safety 
 | Async task / promise | `loop.set_exception_handler()` | `unhandledrejection` |
 | Your own catch blocks | `log_error(msg, exc)` in every `except` | `logError(ctx, err)` in every `catch` |
 
-If you forget a catch block, the first two nets still catch and log the error. The third net (`log_error`/`logError`) adds contextual information. Every `except` block must either call the log function or re-raise - never bare `pass`.
+If you forget a catch block, the first two nets still catch and log the error. The third net (`log_error`/`logError`) adds contextual information. Every `except` block must re-raise or log through the central logger (`log_error` for unexpected failures, `log.warning`/`log.info`/`log.debug` for expected ones) - never bare `pass`; expected control flow is listed in `test_error_logging.py`, which enforces the rule.
 
 **PII-safe error messages**: Provider API errors use template-based messages (structured fields → safe lookup), never passing through raw `error.message` which may contain names, org IDs, or billing URLs. Regex scrubbing is retained as defense-in-depth for stack traces.
 
@@ -280,14 +280,14 @@ All persistence is via SQLite with WAL mode at `data/metrics.db`.
 
 ## Config hot-reload
 
-`config_watcher()` uses `watchfiles.awatch()` on the `config/` directory (filtered to `.yaml`/`.yml` files). On change:
+`config_watcher()` uses `watchfiles.awatch()` on the config files in use (`config.config_path()`: `config/*.yaml` or their `MW_*_YAML` overrides, wherever they live). It runs in every mode, including `MW_DISABLE_TESTS`. On change:
 
 1. `reload_config(log_changes=True)` - reloads YAML files, updates `c`, rebuilds `model_registry`.
 2. `apply_db_changes(result)` - syncs SQLite: delete orphaned rows, upsert registry, apply archive directives.
 3. Logs added/removed models and interval changes.
 4. Broadcasts WS `config_updated` unconditionally.
 5. Sets the wake event to reschedule the scheduler.
-6. Re-fetches provider favicons and model metadata.
+6. Re-fetches provider favicons and model metadata (skipped with `MW_DISABLE_TESTS`).
 
 Config is mutated in-place (`.clear(); .update()` / `.clear(); .extend()`) so all modules holding references see the update.
 

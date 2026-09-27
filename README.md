@@ -10,7 +10,7 @@ Live instance: <https://stats.ai4fun.dev>
 - [Tech stack](#tech-stack) - Backend, frontend, database, real-time
 - [Quick start (Docker compose)](#quick-start-docker-compose) - 3-step setup
 - [Configuration](#configuration) - Three YAML config files
-- [API](#api) - 15 REST endpoints, Swagger UI, ReDoc
+- [API](#api) - 16 REST endpoints, Swagger UI, ReDoc
 - [Architecture](#architecture) - System design overview
 - [Development](#development) - Local setup and testing
 - [PWA and notifications](#pwa-and-notifications) - Installable app, push notifications
@@ -77,7 +77,7 @@ Example files are provided (`*.example`). See [docs/CONFIGURATION.md](docs/CONFI
 
 ## API
 
-15 REST endpoints across 7 tags. Interactive docs are available at runtime:
+16 REST endpoints across 7 tags. Interactive docs are available at runtime:
 
 - **Swagger UI**: `/api/docs`
 - **ReDoc**: `/api/redoc`

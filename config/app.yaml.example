@@ -5,7 +5,8 @@ app:
   name: "ModelWatcher"
   # Short description (used in meta tags, manifest, og:description)
   description: "Real-time LLM API monitoring dashboard"
-  # Enable uvicorn --reload (hot-reload backend on file change). Disable in production.
+  # Reload the backend when a file under backend/ changes (python -m backend.main reads it at
+  # start). The Docker update procedure (git pull, no restart) relies on it.
   debug: true
   # URL prefix for frontend assets (requires server restart - not hot-reloadable)
   static_url_prefix: "/frontend"
@@ -26,6 +27,10 @@ server:
   http_connect_timeout: 10
   # Max connections in the httpx connection pool
   http_pool_max: 20
+  # Host header names this server answers to, besides IP addresses, localhost and the host of
+  # app.site_url, which are always accepted. Any other Host gets 400 (WebSocket: close 1008),
+  # which stops DNS-rebinding pages. "*.example.com" matches subdomains; "*" accepts any host.
+  allowed_hosts: []
 
 # Test scheduling and execution
 testing:
@@ -151,8 +156,7 @@ websocket:
   allowed_origins:
     - *site_url
   # Seconds between server heartbeat messages, so clients can tell a quiet server from a
-  # dead socket. Protocol-level ping/pong (the server dropping dead clients) is set by the
-  # uvicorn flags --ws-ping-interval/--ws-ping-timeout - see Dockerfile
+  # dead socket. Protocol-level ping/pong (the server dropping dead clients) is ping_interval below
   heartbeat_interval: 30
   # Clients reconnect after this many seconds without any message (must exceed heartbeat_interval)
   stale_after: 75
@@ -170,6 +174,10 @@ websocket:
   max_message_bytes: 10240
   # Max notification-prefs syncs per minute per connection; extra syncs are ignored
   sync_prefs_per_minute: 30
+  # Protocol-level ping every ping_interval seconds; a client that does not answer within
+  # ping_timeout seconds is dropped (applied when the server starts: restart after changing)
+  ping_interval: 30
+  ping_timeout: 90
 
 # Notification settings
 notifications:

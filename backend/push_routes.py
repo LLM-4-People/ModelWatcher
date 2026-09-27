@@ -92,7 +92,7 @@ def _validate_push_endpoint(endpoint: str) -> str | None:
         return "Missing endpoint"
     try:
         parsed = urlparse(endpoint)
-    except Exception:
+    except ValueError:
         log.debug("Push endpoint URL parse failed: %s", _sub_hash(endpoint))
         return "Invalid endpoint URL"
     if parsed.scheme != "https":

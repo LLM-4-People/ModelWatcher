@@ -40,5 +40,6 @@ ModelWatcher is a self-hosted monitoring dashboard. When deploying:
 - **SQLite database** (`data/metrics.db`) contains test results and push subscription endpoints. Protect the `data/` directory with appropriate filesystem permissions.
 - **Rate limiting** is applied to push subscribe, validate, test, and client error endpoints. Adjust in `config/app.yaml` under `notifications.rate_limits`.
 - **Request body size** is limited to 1MB by `MAX_REQUEST_BODY_BYTES` in `backend/state.py`.
-- **WebSocket connections** are origin-checked and connection-limited. Pages served by the server itself (the `Origin` host matches the `Host` header) are always accepted; `websocket.allowed_origins` lists any other origin allowed to connect. Configure it and `server.max_connections` in `config/app.yaml`.
+- **Host header** is checked for every request and WebSocket: IP addresses, `localhost`, the host of `app.site_url` and the names in `server.allowed_hosts` are served, anything else gets 400 (a WebSocket is refused). This stops DNS-rebinding pages, which reach the server under the attacker's host name.
+- **WebSocket connections** are origin-checked and connection-limited. Pages served by the server itself (the `Origin` host matches the checked `Host` header) are always accepted; `websocket.allowed_origins` lists any other origin allowed to connect. Configure it and `server.max_connections` in `config/app.yaml`.
 - **Error messages** are template-based (never pass through raw provider error messages) and PII-scrubbed via regex patterns for API keys, org IDs, and UUIDs.

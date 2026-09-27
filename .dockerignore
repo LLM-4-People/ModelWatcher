@@ -5,8 +5,11 @@ __pycache__/
 .ruff_cache/
 .git/
 .gitignore
-.env
-.env.example
+# Env files hold provider API keys; the image never needs them
+.env*
+# Local configs hold deployment secrets and are mounted at runtime; only config/*.example ships
+config/*.yaml
+config/*.yml
 data/
 .venv/
 node_modules/

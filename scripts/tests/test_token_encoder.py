@@ -3,15 +3,20 @@
 Catches finding F2: backend/streaming.py called tiktoken.get_encoding() at import,
 which downloads the encoding, so the server could not start without outbound
 access to openaipublic.blob.core.windows.net (even with MW_DISABLE_TESTS=1).
+And F41: without the encoder, "effective" (per-token) ITL silently fell back to raw
+per-chunk ITL, so batching providers looked several times slower and could trip
+critical-tier degradation.
 """
 import logging
 import threading
 import time
 
 import pytest
+import yaml
 
 import backend.state as st
 import backend.streaming as streaming
+from backend.stats import find_critical_metrics
 
 ENCODING = "test-encoding"
 RETRY_S = 3600
@@ -120,3 +125,39 @@ def test_counts_use_encoder_when_loaded(encoder_env, monkeypatch):
     assert tc.tiktoken_total == 6
     assert tc.token_count_for_tps == 6
     assert tc.answer_token_estimate == 6
+
+
+# A batching provider: 4 tokens per chunk, one chunk every 80 ms, so 20 ms per token
+BATCHED_CHUNKS = ["w w w w"] * 12
+CHUNK_TIMES = [n * 0.08 for n in range(len(BATCHED_CHUNKS))]
+
+
+@pytest.fixture
+def itl_config(monkeypatch):
+    app = yaml.safe_load((st.CONFIG_DIR / "app.yaml.example").read_text())
+    stalls = app["stalls"]
+    for name, value in {"stall_visible_ms": stalls["visible_threshold_ms"], "stall_hiccup_ms": stalls["hiccup_threshold_ms"],
+                        "hiccup_multiplier": stalls["hiccup_multiplier"], "batching_log_threshold": stalls["batching_log_threshold"],
+                        "color_thresholds": app["color_thresholds"]}.items():
+        monkeypatch.setattr(st.c, name, value, raising=False)
+
+
+def _itl(tc):
+    return streaming._compute_itl_statistics("P::m", CHUNK_TIMES, tc, st.TEST_BENCHMARK, None, None, len(CHUNK_TIMES))
+
+
+def test_effective_itl_is_per_token_with_the_encoder(encoder_env, itl_config):
+    streaming._encoders[ENCODING] = _FakeEncoder()
+    itl = _itl(_counts(BATCHED_CHUNKS))
+    assert itl.raw_median_itl_ms == 80.0
+    assert itl.effective_median_itl_ms == 20.0
+
+
+def test_effective_itl_is_unmeasured_without_the_encoder(encoder_env, itl_config):
+    streaming._encoder_last_attempt[ENCODING] = time.monotonic()
+    itl = _itl(_counts(BATCHED_CHUNKS))
+    assert itl.raw_median_itl_ms == 80.0, "raw ITL does not depend on the encoder"
+    effective = (itl.effective_median_itl_ms, itl.effective_avg_itl_ms, itl.effective_p99_itl_ms, itl.effective_itl_tail_ratio)
+    assert effective == (None, None, None, None), "per-chunk ITL must not pass for per-token ITL"
+    result = {"success": True, "effective_itl_tail_ratio": itl.effective_itl_tail_ratio}
+    assert "effective_itl_tail_ratio" not in find_critical_metrics(result)

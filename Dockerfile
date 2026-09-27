@@ -38,14 +38,14 @@ RUN npm install --omit=dev
 # Copy application code
 WORKDIR /app
 COPY backend/ backend/
-COPY config/ config/
 COPY frontend/ frontend/
 # Built CSS lives outside /app because compose mounts the repo read-only over /app,
 # which would hide a file built into /app/frontend. backend/state.py reads this path.
 ENV MW_BUILT_CSS_PATH=/opt/frontend/tailwind.min.css
 COPY --from=css-builder /tmp/frontend/tailwind.min.css ${MW_BUILT_CSS_PATH}
 
-# Copy example configs (actual config/*.yaml are gitignored - mounted at runtime)
+# Only the example configs ship: the real config/*.yaml hold deployment secrets and are
+# mounted at runtime (.dockerignore keeps them out of the build context as well)
 COPY config/*.example config/
 
 # Health check - uses the /health endpoint
@@ -56,4 +56,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 USER appuser
 
 EXPOSE 8080
-CMD ["sh", "-c", "uvicorn backend.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080} --reload --reload-dir backend --loop uvloop --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --log-level warning --ws-ping-interval 30 --ws-ping-timeout 90"]
+# HOST, PORT and FORWARDED_ALLOW_IPS come from the environment; reload and WebSocket pings from app.yaml
+CMD ["python", "-m", "backend.main"]

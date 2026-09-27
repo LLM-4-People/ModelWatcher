@@ -22,7 +22,9 @@ from backend.config import reload_config, config_watcher, apply_db_changes
 from backend.metrics import make_cache_entry
 from backend.stats import compute_trends, compute_reliability_score, bench_only
 from backend.websocket import ws_mgr, websocket_endpoint
-from backend.middleware import ConnectionLimiterMiddleware, SecurityHeadersMiddleware, RequestSizeLimitMiddleware
+from backend.middleware import (
+    ConnectionLimiterMiddleware, HostCheckMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware,
+)
 from backend.scheduler import scheduler
 from backend.streaming import get_encoder
 from backend.state import TEST_BENCHMARK
@@ -65,6 +67,8 @@ def _start_broadcast_batcher():
 def _start_config_watcher():
     if st.awatch:
         st._config_watcher_task = st.create_task(config_watcher(), name="config_watcher")
+    else:
+        st.log.warning("watchfiles not installed - config hot reload is off")
 
 
 def _start_model_info_fetch():
@@ -72,14 +76,13 @@ def _start_model_info_fetch():
     _mi.start_model_info_fetch()
 
 
-# Background work that exists to run tests, in start order. MW_DISABLE_TESTS skips all of it,
-# and the startup log names exactly these, so the two cannot drift apart.
-_TEST_TASKS = {
+# Background work that tests providers or fetches from them (and the token encoding download
+# the tests need), in start order. MW_DISABLE_TESTS skips all of it, a config reload skips the
+# same fetches, and the startup log names exactly these, so the three cannot drift apart.
+_OUTBOUND_TASKS = {
     # Loads now so the encoder is ready before the first benchmark
     "token encoder": get_encoder,
     "scheduler": _start_scheduler,
-    "broadcast batcher": _start_broadcast_batcher,
-    "config watcher": _start_config_watcher,
     "favicons": favicons.start_favicon_fetch,
     "model info": _start_model_info_fetch,
 }
@@ -89,9 +92,9 @@ async def _startup():
     """Initialize DB, populate caches, start background tasks.
 
     Steps: config reload, DB init/sync, model_cache population from SQLite,
-    auto-archive, trend computation, WriteBatcher start, VAPID init, push sub
-    cleanup, and scheduler/config-watcher/favicon/model-info task startup.
-    Skips test-related tasks when MW_DISABLE_TESTS is set.
+    auto-archive, trend computation, WriteBatcher/BroadcastBatcher start, VAPID init,
+    push sub cleanup, heartbeat and config watcher, then the outbound tasks
+    (_OUTBOUND_TASKS), which MW_DISABLE_TESTS skips.
     """
     asyncio.get_running_loop().set_exception_handler(_async_exception_handler)
 
@@ -234,13 +237,16 @@ async def _startup():
     if not st.c.allowed_ws_origins:
         st.log.warning("allowed_ws_origins is empty - all WebSocket origins accepted")
 
-    # Always on: clients treat a silent socket as dead, whether or not tests run
+    # Always on, whether or not tests run: clients treat a silent socket as dead, and a
+    # config edit should reach the dashboard in every mode (F46)
     ws_mgr.start_heartbeat()
+    _start_broadcast_batcher()
+    _start_config_watcher()
 
-    if os.environ.get("MW_DISABLE_TESTS"):
-        st.log.info("MW_DISABLE_TESTS set - not starting: %s", ", ".join(_TEST_TASKS))
+    if st.TESTS_DISABLED:
+        st.log.info("MW_DISABLE_TESTS set - not starting: %s", ", ".join(_OUTBOUND_TASKS))
     else:
-        for start in _TEST_TASKS.values():
+        for start in _OUTBOUND_TASKS.values():
             start()
 
     st.log.info("Startup complete - %d models registered", len(st.model_registry))
@@ -345,9 +351,11 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     return JSONResponse(status_code=422, content={"error": detail})
 
 
-# ── Middleware (outer → inner) ────────────────────────────────────────────────
+# ── Middleware (inner → outer: each add_middleware wraps the ones added before it) ──
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
+# Inside SecurityHeaders, so its 400 carries the security and no-cache headers too
+app.add_middleware(HostCheckMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(ConnectionLimiterMiddleware)
@@ -558,21 +566,28 @@ app.websocket(st.WS_PATH)(websocket_endpoint)
 
 # ── CLI entry point ──────────────────────────────────────────────────────────
 
+def server_options() -> dict:
+    """uvicorn settings for `python -m backend.main`, the one way the server starts (Dockerfile CMD, docs).
+
+    Bind address and trusted proxies are deployment settings from the environment; reload and
+    the WebSocket protocol pings come from app.yaml (F16: they were hardcoded in two places).
+    uvicorn's default event loop picks uvloop when it is installed.
+    """
+    options = {
+        "host": os.environ.get("HOST", "0.0.0.0"),
+        "port": int(os.environ.get("PORT", "8080")),
+        "proxy_headers": True,
+        "forwarded_allow_ips": os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        "log_level": "warning",
+        "ws_ping_interval": st.c.ws_ping_interval,
+        "ws_ping_timeout": st.c.ws_ping_timeout,
+        "reload": st.c.debug,
+    }
+    if st.c.debug:
+        options["reload_dirs"] = [str(st.BACKEND_DIR)]
+    return options
+
+
 if __name__ == "__main__":
     import uvicorn
-    try:
-        import uvloop
-        uvloop.install()
-    except ImportError:
-        st.log.info("uvloop not available, using default event loop")
-    uvicorn.run(
-        "backend.main:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "8080")),
-        proxy_headers=True,
-        forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
-        reload=st.c.debug,
-        log_level="warning",
-        ws_ping_interval=30,
-        ws_ping_timeout=90,
-    )
+    uvicorn.run("backend.main:app", **server_options())

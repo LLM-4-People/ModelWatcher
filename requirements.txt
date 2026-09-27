@@ -7,4 +7,5 @@ orjson
 pywebpush
 cryptography
 Pillow
+publicsuffixlist
 tiktoken

@@ -4,6 +4,7 @@ Project paths come from backend.state (the single source); fixtures here run
 subprocesses and git checks the same way for every test module.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,3 +58,22 @@ def git():
 def git_ignored(git):
     """Return a predicate telling whether git ignores a project-relative path."""
     return lambda rel_path: git("check-ignore", "-q", rel_path).returncode == 0
+
+
+@pytest.fixture(scope="session")
+def dockerfile_stages() -> dict[str, list[tuple[str, str]]]:
+    """The Dockerfile as {stage alias, or 'final': [(INSTRUCTION, arguments), ...]}."""
+    text = re.sub(r"\\\n", " ", (BASE_DIR / "Dockerfile").read_text())
+    stages: dict[str, list[tuple[str, str]]] = {}
+    current: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        instr, _, args = line.partition(" ")
+        instr = instr.upper()
+        if instr == "FROM":
+            parts = args.split()
+            current = stages.setdefault(parts[2] if len(parts) > 2 and parts[1].upper() == "AS" else "final", [])
+        current.append((instr, args.strip()))
+    return stages

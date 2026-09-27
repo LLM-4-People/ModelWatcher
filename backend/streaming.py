@@ -666,13 +666,14 @@ def _compute_itl_statistics(
     # gives per-token ITL instead of per-chunk ITL - critical when providers
     # batch multiple tokens per SSE event. Without this, batched providers
     # would show artificially inflated ITL/stall counts.
-    effective_itls = raw_itls
+    # Per-chunk counts come from the token encoder. Without it the "effective" values
+    # would silently equal raw per-chunk ITL, so they stay unmeasured (None) and cannot
+    # feed the tail ratio, the consistency score or critical-tier degradation (F41).
+    effective_itls: list[float] = []
     if tc.per_chunk_tokens and raw_itls:
-        _local_itls = []
         for k in range(len(raw_itls)):
             n_k = tc.per_chunk_tokens[k + 1]
-            _local_itls.append(raw_itls[k] / n_k if n_k > 0 else raw_itls[k])
-        effective_itls = _local_itls
+            effective_itls.append(raw_itls[k] / n_k if n_k > 0 else raw_itls[k])
 
     # Sub-millisecond ITLs indicate chunks arriving in the same event-loop tick
     # or coalesced by a proxy/CDN. A high burst rate strongly suggests proxy/CDN

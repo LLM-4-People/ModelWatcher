@@ -63,10 +63,10 @@ The server fails fast without its config files, so copy the templates first. Pro
 ```bash
 cp config/app.yaml.example config/app.yaml   # edit for your environment
 cp config/models.yaml.example config/models.yaml
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload --reload-dir backend --loop uvloop
+python3 -m backend.main
 ```
 
-The dashboard is available at `http://localhost:8080`. Set `MW_DISABLE_TESTS=1` to browse without testing providers; the scale-test seeder under [Utility scripts](#utility-scripts) provides sample data.
+`python -m backend.main` is the one way to start the server, here, in the Dockerfile and in the browser tests: `HOST` and `PORT` (default `0.0.0.0:8080`) come from the environment, and code reload (`app.debug`) and the WebSocket ping settings from `app.yaml`. The dashboard is available at `http://localhost:8080`; by IP address or as `localhost` it needs no configuration, other names go in `server.allowed_hosts`. Set `MW_DISABLE_TESTS=1` to browse without testing or contacting providers (config hot reload keeps working); the scale-test seeder under [Utility scripts](#utility-scripts) provides sample data.
 
 ## Project structure
 
@@ -93,7 +93,7 @@ ModelWatcher/
 │   ├── notifications.py       # Degradation detection, notification dispatch
 │   ├── push_routes.py         # Push subscription API routes, VAPID management
 │   ├── stats.py                 # Composite scores, tiers, trends, chart data
-│   ├── middleware.py           # Connection/size limit, security headers
+│   ├── middleware.py           # Connection/size limit, Host check, security headers
 │   ├── scheduler.py            # Test scheduling (benchmark, health, audit, probe)
 │   ├── routes.py               # REST API route handlers, static serving
 │   ├── audit.py                 # SynBad-based audit runner
@@ -137,7 +137,7 @@ npm run test:e2e    # browser tests (builds the CSS first)
 
 The JS unit tests import frontend modules straight into Node (`utils.js`, `state.js` and `conn.js` touch no DOM at import time) and cover the pure logic: segment and separator markup, status glyphs, WebSocket close classification and reconnect pacing.
 
-The browser tests need Chromium for Playwright (`npx playwright install chromium`; set `MW_E2E_CHROMIUM` to a Chromium binary to use another one). Each spec file starts its own server: `tests/e2e/harness.mjs` seeds a small scale-test dataset into a temp dir with `scripts.util.scale_test_db` (`--app-set` shortens the connection timings), starts uvicorn on a free port with `MW_DISABLE_TESTS=1`, and removes everything afterwards. They never touch `data/`, `config/` or a running instance.
+The browser tests need Chromium for Playwright (`npx playwright install chromium`; set `MW_E2E_CHROMIUM` to a Chromium binary to use another one). Each spec file starts its own server: `tests/e2e/harness.mjs` seeds a small scale-test dataset into a temp dir with `scripts.util.scale_test_db` (`--app-set` shortens the connection timings), starts `python -m backend.main` on a free port with `MW_DISABLE_TESTS=1` and no code reload, and removes everything afterwards. They never touch `data/`, `config/` or a running instance.
 
 | Browser test | What it covers |
 |--------------|----------------|
@@ -148,24 +148,34 @@ Most tests are pure unit tests (extract_model_info, config validation, schema ch
 
 | Test file | What it covers |
 |-----------|---------------|
+| `test_api_docs.py` | `docs/API.md` has a section for exactly the app's REST routes, and the endpoint and tag counts in README.md and API.md match the app |
 | `test_api_errors.py` | API error responses are uniform (`{"error": "..."}`) across all routes |
-| `test_built_css.py` | npm scripts, `backend/state.py`, the Dockerfile, `index.html` and the ignore files agree on the built stylesheet path; a missing file logs its path and the build command |
-| `test_config_examples.py` | Every `config/*.example` passes the backend validators and every `app.yaml.example` key is documented in CONFIGURATION.md |
+| `test_built_css.py` | npm scripts, `backend/state.py`, the Dockerfile, `index.html` and the ignore files agree on the built stylesheet path; a missing file logs its path and the build command once per outage, without a traceback |
+| `test_check_imports.py` | `scripts/util/_check_imports.py` derives the load order from the import graph (every backend module, `from backend import x` included), fails on a cycle, and tells needed lazy imports from avoidable ones |
+| `test_config_examples.py` | Every `config/*.example` passes the backend validators, every `app.yaml.example` key is documented in CONFIGURATION.md, leaving out any required key fails with `<path> is required`, and values (log level, host patterns, WebSocket settings) are validated |
 | `test_config_no_defaults.py` | Config has no defaults in code - config is the sole source of truth |
+| `test_config_reload.py` | With `MW_DISABLE_TESTS`, an edit to a config file outside `config/` (an `MW_*_YAML` override) hot-reloads and reaches an open socket as `config_updated` without provider fetches; `reset_epoch` is stripped from the models file in use |
 | `test_db_split.py` | `db_push` and `db_probe` modules use live binding for `db._write_conn` (no stale `None` capture) |
+| `test_deployment.py` | The image copies only `config/*.example`, the build context leaves out local configs and env files, the container starts `python -m backend.main`, no second launch command or ping setting exists, and `server_options()` takes pings and reload from config |
 | `test_docs_commands.py` | Documented commands work as written: Python installs happen inside a virtualenv, scripts that import `backend` run in module form |
-| `test_error_logging.py` | No silent exception swallows in backend (no `except: pass`) |
+| `test_error_logging.py` | Every backend `except` re-raises or logs through `backend.state` (a broad catch at warning or above); control flow is a keyed, documented allowlist with no stale entries; the scanner is self-tested |
+| `test_favicons.py` | `root_url()` derives a provider's homepage with the Public Suffix List: IP and single-label hosts keep host and port, multi-part and hosted suffixes stay whole |
 | `test_frontend_rules.py` | Frontend source rules: separators, status glyphs and test type labels have one home, config values have no fallbacks, only `conn.js` writes the connection dot and banner, paths and close codes come from the server, every JS `catch` logs or re-throws |
+| `test_host_check.py` | Only a `Host` that names the server is served: IP addresses, `localhost`, the `app.site_url` host and `server.allowed_hosts` patterns; others get 400 or a refused WebSocket, with one warning |
 | `test_line_endings.py` | Every tracked text file is stored and checked out with LF (`.gitattributes` `* text=auto eol=lf`) |
+| `test_migrations.py` | Migrations read columns instead of probing with failing statements: a fresh schema runs no ALTER, missing columns are added once, a failing ALTER is not swallowed |
+| `test_model_key.py` | Model keys are built and split only through `make_model_key`/`parse_model_key` in backend and scripts |
 | `test_pricing.py` | `extract_model_info()` pricing normalization (per-token, per-million, cents-per-million) |
 | `test_project_paths.py` | Only `backend/state.py` derives project paths from `__file__`; everything else imports them |
 | `test_rate_limits.py` | All rate limits come from config, none hardcoded |
+| `test_routes.py` | Readiness logs when it changes, not per request; the client error reporter answers and rate-limits from config; the module preload list is the static import closure of `app.js`, dependencies first |
 | `test_rules.py` | `extract_model_info()` rules: context window, capabilities, thinking, modalities, Ollama suffix rules, two real-world fixtures |
 | `test_scale_test_db.py` | The scale-test seeder creates missing dirs, writes the expected rows with the backend schema, and emits configs the validators accept |
 | `test_schemas.py` | Pydantic body models match handler field expectations (no drift) |
 | `test_ssoT_labels.py` | Single source of truth for labels - `state.py` owns, `/api/config` exposes, frontend does not redefine |
-| `test_token_encoder.py` | tiktoken is never loaded at import or on the event loop; a failed load logs once, retries after `token_encoding_retry`, and token counts fall back to chunk counts |
-| `test_websocket.py` | Same-origin pages are always accepted, other origins follow the allowlist (close 1008), the connection limit closes with 1013, every socket starts with a `hello`, heartbeats run with `MW_DISABLE_TESTS`, and the real app serves liveness 200 while readiness is 503 |
+| `test_token_encoder.py` | tiktoken is never loaded at import or on the event loop; a failed load logs once, retries after `token_encoding_retry`, token counts fall back to chunk counts, and effective (per-token) ITL stays unmeasured without the encoder |
+| `test_undefined_names.py` | No backend or scripts module uses a name it never defines or imports (pyflakes) |
+| `test_websocket.py` | Same-origin pages are always accepted, other origins follow the allowlist (close 1008), the connection limit closes with 1013, every socket starts with a `hello`, heartbeats run with `MW_DISABLE_TESTS`, `close_all` tells a gone client from a failure, and the real app serves liveness 200 while readiness is 503, rejects a foreign `Host` and preloads the derived module list |
 
 | JS unit test | What it covers |
 |--------------|----------------|
@@ -186,11 +196,11 @@ Each test file includes a docstring describing the bug family it catches.
 
 ## Backend conventions
 
-- **Package architecture** - `backend/` is a Python package with strict unidirectional dependencies. No circular imports. A utility script (`scripts/util/_check_imports.py`) scans for lazy imports and reports the no-circular-imports invariant.
+- **Package architecture** - `backend/` is a Python package with strict unidirectional dependencies. No circular imports at load time. `scripts/util/_check_imports.py` derives the load order from the import graph, fails on a cycle, and tells needed lazy imports from ones that could move to the top.
 - **Naming**: Public functions (called from other modules) have no `_` prefix (e.g., `stream_test`, `make_result`). Internal-only helpers keep the `_` prefix (e.g., `_check_metric_degradation`).
 - **Shared state**: Modules that mutate shared state use `import backend.state as st` and access via `st.variable` (avoids value-copying from `from ... import` for rebound primitives like `scheduler_running`). Dicts/lists/objects are fine with direct imports since mutations propagate.
 - **`app_cfg` / `models_cfg` / `model_registry`** are mutated in-place (`.clear(); .update()` / `.clear(); .extend()`) instead of rebinding, so all modules holding references see the update.
-- **Error handling**: Every `except` block must call `log_error(msg, exc)` or re-raise. Never bare `pass`. Two global safety nets (`@app.exception_handler`, `loop.set_exception_handler`) catch anything missed.
+- **Error handling**: Every `except` block re-raises or logs through `backend.state`: `log_error(msg, exc)` for unexpected failures, `log.warning`/`log.info`/`log.debug` for expected ones; a broad `except Exception` needs `log_error` or at least `log.warning`. Expected control flow (a parse helper returning `None`, a 400 answer) is listed with its reason in `test_error_logging.py`'s allowlist. Code that runs on every request logs a recurring problem when it starts and when it clears (`st.condition_changed()`), not on every hit. Two global safety nets (`@app.exception_handler`, `loop.set_exception_handler`) catch anything missed.
 - **PII-safe errors**: Provider API errors use template-based messages, never passing through raw `error.message`. See `backend/security.py`.
 
 ## Adding a new provider
@@ -207,7 +217,7 @@ NEW_PROVIDER_API_KEY=sk-your-key
 docker compose -f compose.yaml up -d --build
 ```
 
-> Environment variables are read at container creation time, not at runtime. The `--reload` flag only watches source files and config YAMLs, not environment variables.
+> Environment variables are read at container creation time, not at runtime. Code reload (`app.debug`) and the config watcher only see source files and config YAMLs, not environment variables.
 
 3. Edit `config/models.yaml` - add a provider entry:
 
@@ -262,7 +272,7 @@ Scripts import `backend` for its paths and helpers, so run them from the project
 
 | Script | Purpose | Run command |
 |--------|---------|-------------|
-| `scripts/util/_check_imports.py` | Scans `backend/` for lazy imports and reports the no-circular-imports invariant | `python3 -m scripts.util._check_imports` |
+| `scripts/util/_check_imports.py` | Derives the backend load order from the import graph, exits 1 on a load-time cycle, and says which lazy imports are needed to avoid one | `python3 -m scripts.util._check_imports` |
 | `scripts/util/scale_test_db.py` | Generates a synthetic SQLite database (schema from `backend/db.py`), matching `models`/`app` YAML files and placeholder favicons for scale testing. Output locations, sizes, rates and file names are all options. | `python3 -m scripts.util.scale_test_db --help` |
 
 A typical scale-test run seeds a small dataset, then starts the server on it with tests disabled:
@@ -270,7 +280,7 @@ A typical scale-test run seeds a small dataset, then starts the server on it wit
 ```bash
 python3 -m scripts.util.scale_test_db --providers 10 --models-per 5
 MW_DB_NAME=metrics-scale-test.db MW_MODELS_YAML=models-scale-test.yaml MW_APP_YAML=app-scale-test.yaml \
-MW_SCALE_TEST_KEY=dummy MW_DISABLE_TESTS=1 python3 -m uvicorn backend.main:app --port 8080
+MW_SCALE_TEST_KEY=dummy MW_DISABLE_TESTS=1 PORT=8080 python3 -m backend.main
 ```
 
 ## Performance/stress test scripts

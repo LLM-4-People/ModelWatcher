@@ -54,7 +54,8 @@ async function waitServing(url, proc, log) {
 
 export async function startServer(overrides = FAST_CONN) {
   const dir = mkdtempSync(join(tmpdir(), 'mw-e2e-'));
-  const sets = Object.entries(overrides).flatMap(([k, v]) => ['--app-set', `${k}=${v}`]);
+  // No code reload: the harness owns exactly one server process
+  const sets = Object.entries({ 'app.debug': false, ...overrides }).flatMap(([k, v]) => ['--app-set', `${k}=${v}`]);
   const seed = spawnSync('python3', ['-m', 'scripts.util.scale_test_db', ...SEED_ARGS, '--data-dir', dir, '--config-dir', dir,
     '--app-template', join(ROOT, 'config', 'app.yaml.example'), ...sets], { cwd: ROOT, encoding: 'utf8' });
   if (seed.status !== 0) throw new Error(`seeding failed:\n${seed.stderr}`);
@@ -66,10 +67,12 @@ export async function startServer(overrides = FAST_CONN) {
     MW_APP_YAML: join(dir, 'app-scale-test.yaml'),
     MW_SCALE_TEST_KEY: 'dummy',
     MW_DISABLE_TESTS: '1',
+    HOST: '127.0.0.1',
+    PORT: String(port),
   };
   const log = [];
-  const proc = spawn('python3', ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(port)],
-    { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The same entry point as the Dockerfile and the docs
+  const proc = spawn('python3', ['-m', 'backend.main'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout.on('data', d => log.push(String(d)));
   proc.stderr.on('data', d => log.push(String(d)));
   const url = `http://127.0.0.1:${port}`;

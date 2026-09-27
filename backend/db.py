@@ -463,7 +463,8 @@ def _read_conn() -> sqlite3.Connection:
             try:
                 conn.execute("SELECT 1").fetchone()
                 return conn
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as e:
+                log.warning("Discarding broken pooled read connection: %s", e)
                 try:
                     conn.close()
                 except Exception as e:
@@ -1650,7 +1651,7 @@ class WriteBatcher(PeriodicBatcher):
     N separate lock+INSERT+upsert+commit cycles, we do one lock+executemany+N-upserts+commit.
     """
 
-    def __init__(self, flush_interval: float = 2.0, max_buffer: int = 200):
+    def __init__(self, flush_interval: float, max_buffer: int):
         super().__init__(flush_interval)
         self._max_buffer = max_buffer
         self._rows: list[tuple[str, tuple, dict]] = []

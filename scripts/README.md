@@ -23,8 +23,9 @@ What each test file covers is listed in
 Scripts import `backend` for its paths and helpers, so run them from the project
 root in module form:
 
-- `util/_check_imports.py` - scans `backend/` for lazy imports and reports the
-  no-circular-imports invariant. Run: `python3 -m scripts.util._check_imports`
+- `util/_check_imports.py` - derives the backend load order from the import graph,
+  exits 1 on a load-time cycle, and says which lazy imports are needed to avoid one.
+  Run: `python3 -m scripts.util._check_imports`
 - `util/scale_test_db.py` - generates a synthetic SQLite database (backend schema),
   matching YAML configs and favicons for scale testing. Run:
   `python3 -m scripts.util.scale_test_db --help` for every option.

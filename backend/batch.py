@@ -6,9 +6,8 @@ batched WebSocket broadcasts). Subclasses implement flush().
 """
 
 import asyncio
-import logging
 
-_log = logging.getLogger("modelwatcher")
+from backend.state import log_error
 
 
 class PeriodicBatcher:
@@ -19,7 +18,7 @@ class PeriodicBatcher:
     BroadcastBatcher (scheduler.py).
     """
 
-    def __init__(self, flush_interval: float = 2.0):
+    def __init__(self, flush_interval: float):
         self._flush_interval = flush_interval
         self._task: asyncio.Task | None = None
 
@@ -37,14 +36,13 @@ class PeriodicBatcher:
         await self.flush()
 
     async def _flush_loop(self):
+        # Cancellation (stop()) propagates out of the sleep; only flush failures are caught
         while True:
             try:
                 await asyncio.sleep(self._flush_interval)
                 await self.flush()
-            except asyncio.CancelledError:
-                break
             except Exception as e:
-                _log.error("%s loop error: %s", type(self).__name__, e, exc_info=True)
+                log_error(f"{type(self).__name__} flush failed", e)
                 await asyncio.sleep(self._flush_interval)
 
     async def flush(self):

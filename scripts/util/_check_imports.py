@@ -1,194 +1,111 @@
-"""Check backend modules for circular import risks.
+"""Check the backend import graph: no cycles at load time, and which lazy imports are needed.
 
 Run from the project root: python3 -m scripts.util._check_imports
+
+The load order is derived from the import graph itself (finding F10: a hand-kept rank
+list went stale and reported false violations). A lazy import (one inside a function) is
+needed when its target imports the importer at load time, directly or through other
+modules; otherwise it could move to the top of the module. Exits 1 on a load-time cycle.
 """
 import ast
+import sys
+from dataclasses import dataclass
+from graphlib import CycleError, TopologicalSorter
+from pathlib import Path
 
 from backend.state import BACKEND_DIR
 
-MODULES = sorted(f.stem for f in BACKEND_DIR.glob("*.py") if f.name != "__init__.py")
+_PACKAGE = "backend"
 
 
-def find_parent_function(tree, target_node):
-    """Return the name of the function containing target_node, or None."""
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for child in ast.walk(node):
-                if child is target_node:
-                    return node.name
-    return None
+@dataclass(frozen=True)
+class LazyImport:
+    module: str
+    line: int
+    function: str
+    target: str
 
 
-def extract_imports(module_name):
-    """Extract top-level and lazy backend imports from a module."""
-    source = (BACKEND_DIR / f"{module_name}.py").read_text()
-    tree = ast.parse(source)
-
-    top_level = []  # [(line, target_module)]
-    lazy = []       # [(line, function_name, target_module)]
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                modname = alias.name
-                if modname.startswith("backend."):
-                    parts = modname.split(".")
-                    if len(parts) >= 2 and parts[1] in MODULES:
-                        parent = find_parent_function(tree, node)
-                        if parent:
-                            lazy.append((node.lineno, parent, parts[1]))
-                        else:
-                            top_level.append((node.lineno, parts[1]))
-        elif isinstance(node, ast.ImportFrom):
-            if node.module and node.module.startswith("backend."):
-                parts = node.module.split(".")
-                if len(parts) >= 2 and parts[1] in MODULES:
-                    parent = find_parent_function(tree, node)
-                    if parent:
-                        lazy.append((node.lineno, parent, parts[1]))
-                    else:
-                        top_level.append((node.lineno, parts[1]))
-
-    return top_level, lazy
+def _imports_with_scope(tree: ast.Module):
+    """Yield (import node, name of the enclosing function or None at load time)."""
+    def visit(node: ast.AST, function: str | None):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                yield child, function
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else function
+            yield from visit(child, inner)
+    yield from visit(tree, None)
 
 
-# Documented dependency chain (earlier <- later)
-CHAIN = [
-    "state",
-    "security", "prompts", "websocket", "metrics", "middleware",
-    "ping", "stats", "model_info",
-    "validation", "favicons", "models", "db",
-    "streaming", "push_routes", "notifications", "routes",
-    "scheduler", "config",
-    "main",
-]
-
-CHAIN_RANK = {name: i for i, name in enumerate(CHAIN)}
+def _targets(node: ast.Import | ast.ImportFrom, modules: set[str]) -> set[str]:
+    """Backend modules an import statement loads (import backend.x, from backend.x import y, from backend import x)."""
+    if isinstance(node, ast.Import):
+        names = [alias.name for alias in node.names]
+    elif node.module == _PACKAGE:
+        names = [f"{_PACKAGE}.{alias.name}" for alias in node.names]
+    else:
+        names = [node.module or ""]
+    return {name.split(".")[1] for name in names
+            if name.startswith(f"{_PACKAGE}.") and name.split(".")[1] in modules}
 
 
-def main():
-    print("=" * 80)
-    print("BACKEND CIRCULAR IMPORT ANALYSIS")
-    print("=" * 80)
-    print()
+def backend_imports(backend_dir: Path = BACKEND_DIR) -> tuple[dict[str, set[str]], list[LazyImport]]:
+    """The load-time graph {module: backend modules it imports at load} and the lazy imports."""
+    modules = {f.stem for f in backend_dir.glob("*.py") if f.name != "__init__.py"}
+    graph: dict[str, set[str]] = {mod: set() for mod in modules}
+    lazy: list[LazyImport] = []
+    for mod in sorted(modules):
+        tree = ast.parse((backend_dir / f"{mod}.py").read_text())
+        for node, function in _imports_with_scope(tree):
+            for target in _targets(node, modules) - {mod}:
+                if function:
+                    lazy.append(LazyImport(mod, node.lineno, function, target))
+                else:
+                    graph[mod].add(target)
+    return graph, lazy
 
-    all_top = {}  # module -> [(line, target)]
-    all_lazy = {}  # module -> [(line, func, target)]
 
-    for mod in MODULES:
-        top, lazy = extract_imports(mod)
-        all_top[mod] = top
-        all_lazy[mod] = lazy
+def load_order(graph: dict[str, set[str]]) -> list[str]:
+    """Modules in an order where each follows everything it imports at load time; CycleError on a cycle."""
+    return list(TopologicalSorter(graph).static_order())
 
-    # --- Top-level imports ---
-    print("TOP-LEVEL BACKEND IMPORTS (module load time)")
-    print("-" * 80)
-    violations = []
-    for mod in MODULES:
-        if not all_top[mod]:
-            continue
-        rank = CHAIN_RANK.get(mod, -1)
-        for line, target in all_top[mod]:
-            target_rank = CHAIN_RANK.get(target, -1)
-            direction = "OK" if rank > target_rank else "VIOLATION"
-            if direction == "VIOLATION":
-                violations.append((mod, line, target))
-            print(f"  {mod:20s} -> {target:20s}  (line {line:4d})  "
-                  f"[{mod}#{rank} -> {target}#{target_rank}]  {direction}")
 
+def lazy_import_needed(graph: dict[str, set[str]], lazy: LazyImport) -> bool:
+    """Whether moving the import to load time would close a cycle: the target reaches the importer."""
+    seen, stack = set(), [lazy.target]
+    while stack:
+        mod = stack.pop()
+        if mod == lazy.module:
+            return True
+        if mod not in seen:
+            seen.add(mod)
+            stack.extend(graph.get(mod, ()))
+    return False
+
+
+def main(backend_dir: Path = BACKEND_DIR) -> int:
+    graph, lazy = backend_imports(backend_dir)
+    try:
+        order = load_order(graph)
+    except CycleError as e:
+        print(f"LOAD-TIME IMPORT CYCLE: {' -> '.join(e.args[1])}")
+        return 1
+
+    print("LOAD ORDER (each module after everything it imports at load time)")
+    print("  " + ", ".join(order))
     print()
     print("LAZY IMPORTS (inside functions)")
-    print("-" * 80)
-    for mod in MODULES:
-        if not all_lazy[mod]:
-            continue
-        rank = CHAIN_RANK.get(mod, -1)
-        for line, func, target in all_lazy[mod]:
-            target_rank = CHAIN_RANK.get(target, -1)
-            legit = "legit" if rank < target_rank else "UNNECESSARY"
-            print(f"  {mod:20s} -> {target:20s}  (line {line:4d}, in {func}())  "
-                  f"[{mod}#{rank} -> {target}#{target_rank}]  {legit}")
+    needed = 0
+    for imp in lazy:
+        is_needed = lazy_import_needed(graph, imp)
+        needed += is_needed
+        verdict = f"needed ({imp.target} imports {imp.module} at load time)" if is_needed else "could be top-level"
+        print(f"  {imp.module}.py:{imp.line} {imp.function}() -> {imp.target}: {verdict}")
     print()
-
-    # --- Circular import detection ---
-    print("CIRCULAR IMPORT RISK ANALYSIS")
-    print("-" * 80)
-
-    # Build graph from top-level imports only
-    graph = {}
-    for mod in MODULES:
-        graph[mod] = [target for _, target in all_top[mod]]
-
-    # Detect cycles via DFS
-    def find_cycles(graph):
-        visited = set()
-        rec_stack = set()
-        cycles = []
-
-        def dfs(node, path):
-            visited.add(node)
-            rec_stack.add(node)
-            for neighbor in graph.get(node, []):
-                if neighbor not in visited:
-                    dfs(neighbor, path + [neighbor])
-                elif neighbor in rec_stack:
-                    # Found a cycle
-                    cycle_start = path.index(neighbor)
-                    cycle = path[cycle_start:] + [neighbor]
-                    cycles.append(cycle)
-            rec_stack.discard(node)
-
-        for node in graph:
-            if node not in visited:
-                dfs(node, [node])
-
-        return cycles
-
-    cycles = find_cycles(graph)
-    if cycles:
-        print("  CIRCULAR IMPORTS DETECTED:")
-        for cycle in cycles:
-            print(f"    {' -> '.join(cycle)}")
-    else:
-        print("  No circular imports at module load time.")
-
-    print()
-
-    # --- Violations ---
-    if violations:
-        print("DEPENDENCY CHAIN VIOLATIONS")
-        print("-" * 80)
-        for mod, line, target in violations:
-            rank = CHAIN_RANK.get(mod, -1)
-            target_rank = CHAIN_RANK.get(target, -1)
-            print(f"  {mod} (rank {rank}) imports {target} (rank {target_rank}) "
-                  f"at top level (line {line})")
-            print(f"    -> {target} appears EARLIER in the chain, "
-                  f"but {mod} imports it at load time")
-            print(f"    -> This means {mod} depends on {target}, "
-                  f"but {target} should not depend on {mod}")
-    else:
-        print("No dependency chain violations found.")
-
-    print()
-    print("=" * 80)
-    print("SUMMARY")
-    print("=" * 80)
-    print(f"  Modules analyzed: {len(MODULES)}")
-    print(f"  Top-level import violations: {len(violations)}")
-    print(f"  Circular imports: {len(cycles)}")
-
-    # Count lazy imports per module
-    lazy_counts = {}
-    for mod in MODULES:
-        lazy_counts[mod] = len(all_lazy[mod])
-    lazy_modules = {m: c for m, c in lazy_counts.items() if c > 0}
-    if lazy_modules:
-        print(f"  Lazy imports (break cycles): {sum(lazy_modules.values())} "
-              f"in {len(lazy_modules)} modules")
-        for m, c in lazy_modules.items():
-            print(f"    {m}: {c} lazy import(s)")
+    print(f"SUMMARY: {len(graph)} modules, {sum(map(len, graph.values()))} load-time imports, no cycles, "
+          f"{len(lazy)} lazy imports ({needed} needed)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -13,14 +13,13 @@ import time
 from datetime import datetime, timezone, timedelta
 
 import orjson
-from fastapi.responses import JSONResponse
 
 import backend.state as st
 import backend.db as db
 import backend.db_push as db_push
 import backend.push_routes as push_routes
 from backend.state import (
-    c, log, log_error, push_available, utc_now_iso, parse_model_key,
+    c, log, log_error, push_available, utc_now_iso, make_model_key, parse_model_key,
     EVENT_LABELS, METRIC_LABELS,
 )
 from backend.push_routes import (
@@ -734,7 +733,7 @@ async def notify_registry_changes(
         try:
             model_names = [name for _, name in removed_by_provider.get(provider, [])]
             await _dispatch_registry_notification(
-                "provider_changed", f"{provider}::", provider, "",
+                "provider_changed", make_model_key(provider, ""), provider, "",
                 {"provider": provider, "models": model_names, "action": "removed"},
             )
         except Exception as e:
@@ -759,7 +758,7 @@ async def notify_registry_changes(
     for provider, model_names in new_provider_models.items():
         try:
             await _dispatch_registry_notification(
-                "provider_changed", f"{provider}::", provider, "",
+                "provider_changed", make_model_key(provider, ""), provider, "",
                 {"provider": provider, "models": model_names, "action": "added"},
             )
         except Exception as e:
@@ -795,7 +794,7 @@ def handle_get_notifications(since: str | None = None, client_id: str | None = N
         try:
             datetime.fromisoformat(since)
             min_ts = max(since, cutoff)
-        except (ValueError, TypeError):
+        except ValueError:
             return error_response("Invalid 'since' parameter - expected ISO 8601 datetime")
     client_sub = db_push.get_push_sub_by_client(client_id) if client_id else None
     if client_sub:

@@ -8,7 +8,7 @@ services:
     container_name: 'modelwatcher'
     env_file: .env.modelwatcher
     volumes:
-      # Read-only: backend/, frontend/, etc. (uvicorn --reload watches via inotify, works on :ro)
+      # Read-only: backend/, frontend/, etc. (the app.debug reload watches via inotify, works on :ro)
       - "/path/to/ModelWatcher:/app:ro"
       # Read-write: config dir only (config.py strips reset_epoch from models.yaml in-place)
       - "/path/to/ModelWatcher/config:/app/config:rw"
