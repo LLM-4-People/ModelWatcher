@@ -68,6 +68,12 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - New shared pieces: `MW_DATA_DIR` in `state.py` (DB, VAPID keys, `FAVICON_DIR`, tiktoken cache), the seeder's `--server-env`, `pytest.ini`, the conftest `example_config_env` fixture and a private data dir per `run_python` child, `scripts/tests/app_child.py` (`emit`/`result`, `receive_until`), `_char_forms()` in the frontend rules, `TIER_DOT` and `_LOG_TAG_SEP` in `utils.js`.
 - Blocked: F17 and the `npm test` half of F43 both need a `package.json` edit, which the session's permission check refused; they wait for the user.
 
+### Round 6 - design synthesis, mockups and an interrupted frontend group
+
+- Judge panel (clarity, feasibility, novelty) scored the 10 concepts; synthesis kept four directions: Job Lens (choose), Timetable (watch), Quiet Room (calm), Speedmap (explore), plus shared foundations and open questions. A completeness critic forced a revision: the "frontend-only v1" claims were withdrawn because every direction needs a backend data contract, and the merged TTFT sources (F58) must be separated first.
+- Mockups live outside the repo (`/tmp/claude-0/mock/`): one derived dataset (`derive.py`) is the single source of every number, a shared logic kit, an inliner build and a mechanical checker (console errors, overflow at 390 px, fonts, contrast, both themes).
+- A usage limit stopped both running workflows. The frontend writer's partial work was pushed as a labelled WIP commit (`e9ce1f7`) after the Python and JS suites passed; one browser test (F52) fails because its test landed before its fix.
+
 ### Process notes
 
 - Every writer round ends with an independent read-only verifier that reproduces the original failures, mutation-checks the new tests and reviews the diff against the rules. Round 1 of this found a regression the writer's own tests missed, so the step stays.
@@ -87,3 +93,8 @@ Issues live in [FINDINGS.md](FINDINGS.md).
 - A Playwright-mocked WebSocket opens only after its route handler returns; a close sent inside the handler arrives first, so the page never sees `open`. For "accepted, then closed" use `ws.connectToServer()` and close on the server's first frame. An `onClose` handler on the page side is called again when the server side closes.
 - Starlette's `TestClient` WebSocket `receive` has no timeout; read frames in a real-app child through `app_child.receive_until()` so a silent server fails an assertion instead of the 120 s subprocess timeout.
 - A mutation that breaks `DATA_DIR` makes children write into the checkout's `data/` (a `metrics.db` appeared and was removed). Never combine such a mutation with the seeder tests: the seeder deletes its DB name first, which in `data/` is the shared dev server's database.
+
+- A triage reader that appends to FINDINGS.md while a writer edits it breaks the one-writer rule for that file. Next time the triage agent returns its findings and the next writer registers them.
+- Mockup builders run in parallel only because each is confined to its own folder and the shared kit is read-only for them; one writer per file or module still holds.
+- Usage limits can stop a workflow mid-writer. Resume with the workflow's run ID so finished agents replay from cache, and give only the interrupted agents a note that names their partial work. Save partial repo work as a clearly labelled WIP commit only after the suites run, and name any known failing test in the message.
+- Running two large workflows at once doubles the burn rate towards the usage limit; run the user-facing one first.
