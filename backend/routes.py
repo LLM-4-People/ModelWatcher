@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import math
 import re
-import time
 from pathlib import Path
 
 import orjson
@@ -24,7 +23,8 @@ from backend.websocket import connection_config
 _client_error_times: dict[str, list[float]] = {}
 _metrics_rebuild_lock = asyncio.Lock()
 _model_info_rebuild_lock = asyncio.Lock()
-_config_cache: dict = {"raw": None, "etag": None, "expires": 0.0}
+# The /api/config body, rebuilt after a config reload (which clears raw) or a scheduler start or stop
+_config_cache: dict = {"raw": None, "etag": None, "scheduler": None}
 
 
 def check_rate_limit(buckets: dict, key: str, window_s: float, max_count: int, label: str = "Rate limited") -> JSONResponse | None:
@@ -75,8 +75,7 @@ def _get_prefix_re(pattern_template: str) -> re.Pattern:
 
 
 _file_version_cache: dict[str, tuple[float, str, float]] = {}
-_static_version_cache: float | None = None
-_asset_fingerprint_cache: str | None = None
+_asset_fingerprint_cache: dict = {"signature": None, "value": None}
 
 
 def _mtime(path: Path) -> float | None:
@@ -100,26 +99,76 @@ def _newest_mtime(root: Path, pattern: str) -> float:
     return max((m for f in root.rglob(pattern) if f.is_file() and (m := _mtime(f)) is not None), default=0.0)
 
 
+def _frontend_files() -> list[Path]:
+    """Every file the page is built from: frontend/ and the built stylesheet, which the Docker image
+    keeps outside it (st.BUILT_CSS_PATH)."""
+    files = sorted(f for f in st.FRONTEND_DIR.rglob("*") if f.is_file())
+    if not st.BUILT_CSS_PATH.is_relative_to(st.FRONTEND_DIR) and st.BUILT_CSS_PATH.is_file():
+        files.append(st.BUILT_CSS_PATH)
+    return files
+
+
+def _frontend_signature() -> tuple[float, int]:
+    """Newest mtime and number of the frontend files: cheap enough for every deploy poll, and it
+    changes when a file is edited, added, removed or the stylesheet is rebuilt. Versions used to be
+    cached until some client loaded /, so a lone open tab never saw a deploy (finding F87)."""
+    files = _frontend_files()
+    return max((m for f in files if (m := _mtime(f)) is not None), default=0.0), len(files)
+
+
 def _static_version() -> float:
-    """Mtime of the most recently modified file in FRONTEND_DIR."""
-    global _static_version_cache
-    if _static_version_cache is None:
-        _static_version_cache = _newest_mtime(st.FRONTEND_DIR, "*")
-    return _static_version_cache
+    """Mtime of the most recently modified frontend file (the /api/deploy-version value)."""
+    return _frontend_signature()[0]
 
 
 def _asset_fingerprint() -> str:
-    """Content-hash fingerprint for all frontend assets (sw.js cache versioning)."""
-    global _asset_fingerprint_cache
-    if _asset_fingerprint_cache is None:
+    """Content hash of all frontend assets (sw.js cache version), recomputed when the signature changes."""
+    signature = _frontend_signature()
+    if _asset_fingerprint_cache["signature"] != signature:
         h = hashlib.sha1()
-        for f in sorted(st.FRONTEND_DIR.rglob("*")):
-            body = _read_bytes(f) if f.is_file() else None
+        for f in _frontend_files():
+            body = _read_bytes(f)
             if body is not None:
-                h.update(f.relative_to(st.FRONTEND_DIR).as_posix().encode())
+                h.update(f.name.encode() if f == st.BUILT_CSS_PATH else f.relative_to(st.FRONTEND_DIR).as_posix().encode())
                 h.update(body)
-        _asset_fingerprint_cache = h.hexdigest()[:16]
-    return _asset_fingerprint_cache
+        _asset_fingerprint_cache.update(signature=signature, value=h.hexdigest()[:16])
+    return _asset_fingerprint_cache["value"]
+
+
+# ── Theme tokens (frontend/input.css is their one home, finding F82) ────────────
+
+_THEME_BLOCKS = {"light": ":root", "dark": ".dark"}
+_TOKEN_RE = re.compile(r"(--[\w-]+)\s*:\s*([^;]+);")
+# Painted before the stylesheet loads: page background and text, and the notification bell
+_EARLY_TOKENS = ("--color-base", "--color-text-primary", "--color-tier-accent")
+_theme_tokens_cache: dict = {"mtime": None, "value": None}
+
+
+def theme_tokens() -> dict[str, dict[str, str]]:
+    """Custom properties of input.css's light (:root) and dark (.dark) blocks, cached by mtime.
+
+    The early-paint style, the theme-color meta tag and the manifest take their colours from here,
+    so a palette change in input.css reaches them without a second copy.
+    """
+    path = st.FRONTEND_DIR / "input.css"
+    mt = _mtime(path)
+    if _theme_tokens_cache["mtime"] != mt:
+        css = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
+        tokens = {}
+        for scheme, selector in _THEME_BLOCKS.items():
+            m = re.search(rf"^{re.escape(selector)}\s*\{{(.*?)^\}}", css, re.S | re.M)
+            if not m:
+                raise ValueError(f"{path}: no {selector} block with the {scheme} theme tokens")
+            tokens[scheme] = dict(_TOKEN_RE.findall(m.group(1)))
+        _theme_tokens_cache.update(mtime=mt, value=tokens)
+    return _theme_tokens_cache["value"]
+
+
+def _early_theme_css() -> str:
+    """The early-paint tokens for both themes, so the page has its colours before the stylesheet."""
+    tokens = theme_tokens()
+    block = lambda scheme: ";".join(f"{t}:{tokens[scheme][t]}" for t in _EARLY_TOKENS)
+    return f"<style>{_THEME_BLOCKS['light']}{{{block('light')}}}{_THEME_BLOCKS['dark']}{{{block('dark')}}}</style>"
 
 
 def _file_version(path_suffix: str) -> str:
@@ -261,21 +310,48 @@ def serve_js(request: Request, path_suffix: str) -> Response:
 
 
 _CACHE_VER_PLACEHOLDER = '__CACHE_VERSION__'
+# The app's colour where there is one for both themes (manifest, first theme-color): the dark base
+_PLACEHOLDER_THEME = "__THEME_COLOR__"
 
 
 def _replace_placeholders(text: str) -> str:
-    """Replace __STATIC_PREFIX__, __APP_NAME__, __APP_DESCRIPTION__ placeholders with configured values."""
+    """Replace the __STATIC_PREFIX__, __APP_NAME__, __APP_DESCRIPTION__ and __THEME_COLOR__ placeholders."""
     text = text.replace(_PLACEHOLDER_PREFIX, st.c.static_url_prefix)
     text = text.replace(_PLACEHOLDER_NAME, st.c.app_name)
     text = text.replace(_PLACEHOLDER_DESC, st.c.app_description)
+    text = text.replace(_PLACEHOLDER_THEME, theme_tokens()["dark"]["--color-base"])
     return text
+
+
+def ui_config() -> dict:
+    """Browser settings (app.yaml ui.* and the in-app notification settings), in the page
+    bootstrap and in /api/config, so the page has them from its first line on (finding F20)."""
+    return {**st.c.ui, "toast_duration_ms": st.c.notif_in_app_toast_ms,
+            "notif_history_size": st.c.notif_in_app_history_size}
+
+
+def page_bootstrap() -> dict:
+    """Everything the page needs before its first request, as window.__MW_BOOT__.
+
+    One object instead of one global per value, so the page checks it once at start (finding F32)
+    and a missing value is one clear error rather than scattered TypeErrors.
+    """
+    return {
+        "static_prefix": st.c.static_url_prefix,
+        "app_name": st.c.app_name,
+        "log_level": st.LOG_LEVELS.index(st.c.log_level),
+        "conn": connection_config(),
+        "storage_keys": st.STORAGE_KEYS,
+        "storage_prefix": st.STORAGE_PREFIX,
+        "themes": st.THEMES,
+        "model_key_sep": st.MODEL_KEY_SEP,
+        "ui": ui_config(),
+    }
 
 
 _METRICS_RESPONSE_TYPES = frozenset({"card", "modal", "history"})
 _TEST_TYPES = frozenset((st.TEST_BENCHMARK, st.TEST_HEALTH))
 _CHART_VIEWS = frozenset({"speed", "consistency", "scores", "health"})
-_MAX_BUCKETS = 500
-_MAX_HISTORY_LIMIT = 5000
 _VALID_SORT_KEYS = frozenset({"time", "ttft", "tps", "stalls", "p99", "batch", "tail"})
 
 
@@ -366,11 +442,6 @@ def index(request: Request):
     """
     nonce = getattr(request.state, 'csp_nonce', '')
     prefix = st.c.static_url_prefix
-    _file_version_cache.clear()
-    _js_rewrite_cache.clear()
-    global _static_version_cache, _asset_fingerprint_cache
-    _static_version_cache = None
-    _asset_fingerprint_cache = None
     html = (st.FRONTEND_DIR / "index.html").read_text()
     html = _replace_placeholders(html)
 
@@ -385,42 +456,44 @@ def index(request: Request):
     preload_block = "\n".join(f'<link rel="modulepreload" href="{prefix}/{rel}?v={_file_version(rel)}">'
                               for rel in module_preload_order())
     html = html.replace('<script type="module"', preload_block + "\n<script type=\"module\"", 1)
+    # Theme tokens before anything paints; the inline critical CSS in index.html reads them
+    html = html.replace('<head>', '<head>' + _early_theme_css(), 1)
     if nonce:
-        # FOUC prevention - inject blocking script + style immediately after <head>
-        # 1. Theme: reads localStorage, sets .dark before paint
-        # 2. Bell icon: reads localStorage notif settings, sets bell-fouc-* class on <html>
-        #    CSS uses hardcoded colors (not CSS vars) because the stylesheet may not be loaded yet
-        #    initPush() removes the FOUC class when push init completes
+        # FOUC prevention, a blocking script right after the early tokens:
+        # 1. Theme: the stored preference (or the system setting) sets .dark before paint, and the
+        #    theme-color meta takes the base colour of the result
+        # 2. Bell icon: stored notification settings set bell-fouc-* on <html>; the bell colour is a
+        #    token, and initPush() removes the class when push init completes
+        keys = st.STORAGE_KEYS
+        light, dark = st.THEMES
         bell_fouc_css = (
             '<style>'
-            'html.bell-fouc-on #notify-btn,html.bell-fouc-active #notify-btn{color:#2563eb}'
-            'html.dark.bell-fouc-on #notify-btn,html.dark.bell-fouc-active #notify-btn{color:#60a5fa}'
+            'html.bell-fouc-on #notify-btn,html.bell-fouc-active #notify-btn{color:var(--color-tier-accent)}'
             'html.bell-fouc-active #notify-btn #notify-icon-bell{fill:currentColor}'
             '</style>'
         )
         fouc_script = (
             f'<script nonce="{nonce}">'
             '(function(){'
-            'var t=localStorage.getItem("mw_theme");'
-            'var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme:dark)").matches);'
-            'document.documentElement.classList.toggle("dark",d);'
+            'var ls=window.localStorage,h=document.documentElement;'
+            f'var t=ls.getItem({orjson.dumps(keys["THEME"]).decode()});'
+            f'var d=t==={orjson.dumps(dark).decode()}||(t!=={orjson.dumps(light).decode()}'
+            '&&window.matchMedia("(prefers-color-scheme:dark)").matches);'
+            'h.classList.toggle("dark",d);'
             'var m=document.querySelector(\'meta[name="theme-color"]\');'
-            'if(m)m.content=d?"#0c1220":"#f8fafc";'
-            'var ns=JSON.parse(localStorage.getItem("mw_notif_settings")||"{}");'
+            'if(m)m.content=getComputedStyle(h).getPropertyValue("--color-base").trim();'
+            f'var ns=JSON.parse(ls.getItem({orjson.dumps(keys["NOTIF_SETTINGS"]).decode()})||"{{}}");'
             'if(ns.enabled){'
-            'var nl=localStorage.getItem("mw_notif_local")==="1";'
+            f'var nl=ls.getItem({orjson.dumps(keys["NOTIF_LOCAL"]).decode()})==="1";'
             'var np=typeof Notification!=="undefined"&&Notification.permission==="granted";'
-            'document.documentElement.classList.add((nl||np)?"bell-fouc-active":"bell-fouc-on");'
+            'h.classList.add((nl||np)?"bell-fouc-active":"bell-fouc-on");'
             '}'
-            'try{localStorage.removeItem("mw_dh");localStorage.removeItem("mw_pf")}catch(e){}'
             '})()</script>'
         )
-        html = html.replace('<head>', '<head>' + bell_fouc_css + fouc_script, 1)
-        _console_level = st.LOG_LEVELS.index(st.c.log_level)
+        html = html.replace('</style>', '</style>' + bell_fouc_css + fouc_script, 1)
         html = html.replace(
             '</head>',
-            f'<script nonce="{nonce}">window.__STATIC_PREFIX__="{prefix}";window.__APP_NAME__={orjson.dumps(st.c.app_name).decode()};'
-            f'window.__LOG_LEVEL__={_console_level};window.__MW_CONN__={orjson.dumps(connection_config()).decode()}</script></head>',
+            f'<script nonce="{nonce}">window.__MW_BOOT__={orjson.dumps(page_bootstrap()).decode()}</script></head>',
             1,
         )
         html = html.replace('<script type="module"', f'<script type="module" nonce="{nonce}"', 1)
@@ -489,7 +562,7 @@ async def get_metrics(request: Request):
             return err
         if since is not None and until is not None and since > until:
             return _query_error("Invalid time range")
-        buckets, err = _query_int(request, "buckets", 20, min_value=1, max_value=_MAX_BUCKETS)
+        buckets, err = _query_int(request, "buckets", 20, min_value=1, max_value=st.c.max_chart_buckets)
         if err:
             return err
         test_type, err = _query_choice(request, "test_type", st.TEST_BENCHMARK, _TEST_TYPES)
@@ -509,7 +582,7 @@ async def get_metrics(request: Request):
                     if key and key not in _VALID_SORT_KEYS:
                         return _query_error("Invalid sort")
 
-            limit, err = _query_int(request, "limit", 50, min_value=1, max_value=_MAX_HISTORY_LIMIT)
+            limit, err = _query_int(request, "limit", 50, min_value=1, max_value=st.c.history_query_limit)
             if err:
                 return err
             result = await asyncio.to_thread(build_history_response, model_key, before, limit, test_type, since, until, sort)
@@ -591,11 +664,10 @@ async def get_metrics(request: Request):
 
 
 def get_config(request: Request):
-    """Merged config endpoint - intervals, thresholds, labels, time ranges. ETag-cached (10s TTL)."""
-    now = time.monotonic()
-    if _config_cache["raw"] is None or now >= _config_cache["expires"]:
-        last_ago = round(now - st.last_run_time) if st.last_run_time else None
-        next_in = round(st.next_run_time - now) if st.next_run_time else None
+    """Merged config endpoint - intervals, thresholds, labels, time ranges. ETag-cached until the
+    config reloads or the scheduler starts or stops."""
+    scheduler = st.scheduler_state()
+    if _config_cache["raw"] is None or _config_cache["scheduler"] != scheduler:
         raw = orjson.dumps({
             "app_name": st.c.app_name,
             "benchmark_interval_seconds": st.c.benchmark_interval,
@@ -607,20 +679,29 @@ def get_config(request: Request):
                              for k, v in st.c.audit_suites.items()} if st.c.audit_suites else {},
             "probe_enabled": st.c.probe_enabled,
             "probe_interval_seconds": st.c.probe_interval,
-            "last_run_ago_seconds": last_ago,
-            "next_run_in_seconds": max(next_in, 0) if next_in is not None else None,
+            "scheduler": scheduler,
+            "degraded_critical_metrics": st.c.degraded_critical_metrics,
+            "stalls": {"visible_threshold_ms": st.c.stall_visible_ms, "hiccup_multiplier": st.c.hiccup_multiplier},
+            "scores": {"consistency": st.c.scores_consistency_weights, "speed": st.c.scores_speed_weights,
+                       "reliability": {"availability_weight": st.c.scores_reliability_avail_weight,
+                                       "quality_weight": st.c.scores_reliability_quality_weight}},
             "color_thresholds": st.c.color_thresholds,
             "time_ranges": st.c.time_ranges,
+            "ui": ui_config(),
             "status_values": st.STATUS_VALUES,
+            "status_labels": st.STATUS_LABELS,
             "test_types": st.TEST_TYPES,
             "test_type_labels": st.TEST_TYPE_LABELS,
             "chart_views": st.CHART_VIEWS,
+            "chart_view_labels": st.CHART_VIEW_LABELS,
+            "capabilities": st.CAPABILITIES,
             "event_labels": st.EVENT_LABELS,
             "metric_labels": st.METRIC_LABELS,
+            "metric_short_labels": st.METRIC_SHORT_LABELS,
         })
         _config_cache["raw"] = raw
         _config_cache["etag"] = _compute_etag(raw)
-        _config_cache["expires"] = now + 10
+        _config_cache["scheduler"] = scheduler
     return _etag_response(request, body=_config_cache["raw"], etag=_config_cache["etag"])
 
 
@@ -653,11 +734,11 @@ async def get_audit(request: Request):
     With ?model= returns latest result + history for that model.
     With ?model=&type=evals&id=N returns individual eval details for a specific result.
     """
-    import backend.db as db; import backend.db_probe as db_probe
+    import backend.db_probe as db_probe
     since, err = _query_float(request, "since")
     if err:
         return err
-    limit, err = _query_int(request, "limit", 50, min_value=1, max_value=_MAX_HISTORY_LIMIT)
+    limit, err = _query_int(request, "limit", 50, min_value=1, max_value=st.c.history_query_limit)
     if err:
         return err
     model_key = request.query_params.get("model")

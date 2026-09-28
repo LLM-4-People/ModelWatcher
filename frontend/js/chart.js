@@ -1,7 +1,7 @@
 // Chart.js lifecycle: lazy loading, lazy init via IntersectionObserver, cleanup
 // of offscreen charts, and card view switching. Chart instances store _buckets,
 // _view, _full, _modelId as the source of truth for updates.
-import { state, _chartReady, setChartReady } from './state.js';
+import { state, _chartReady, setChartReady, LS, BOOT } from './state.js';
 import { slug, logError, logDebug, logTag } from './utils.js';
 import {
   evenTimeTicksPlugin, dayBoundaryPlugin, thresholdPlugin,
@@ -20,7 +20,6 @@ let _chartObserver = null;
 const _pendingCharts = new Map();
 const _visibleCharts = new Set();
 let _viewGen = 0;
-const _TTL_MS = 5000;
 const _lastFetch = new Map();
 const _INIT_BATCH = 3;
 const _INIT_YIELD_EVERY = 5;
@@ -44,25 +43,20 @@ export function _fetchMetaClear() {
   _lastFetch.clear();
 }
 
-export const CHART_VIEWS = [
-  { key: 'speed', label: 'TPS + TTFT', tip: 'chartSpeed' },
-  { key: 'consistency', label: 'P99 ITL (raw) + Batching', tip: 'chartConsistency' },
-  { key: 'scores', label: 'C / S / R', tip: 'chartScores' },
-  { key: 'health', label: 'Health + TTFT', tip: 'chartHealth' },
-];
-
+// The card view: the stored one while the server still offers it, else its first view
 export function getCardView() {
-  return localStorage.getItem('mw_card_view') || 'speed';
+  const stored = localStorage.getItem(LS.CARD_VIEW);
+  return state.chartViews.includes(stored) ? stored : state.chartViews[0];
 }
 
 function setCardView(view) {
-  localStorage.setItem('mw_card_view', view);
+  localStorage.setItem(LS.CARD_VIEW, view);
 }
 
 export function _loadChartJS() {
   if (_chartReady) return _chartReady;
   if (typeof Chart !== 'undefined') { const p = Promise.resolve(); setChartReady(p); return p; }
-  const prefix = window.__STATIC_PREFIX__;
+  const prefix = BOOT.static_prefix;
   const promise = new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = `${prefix}/js/vendor/chart.umd.min.js`;
@@ -179,7 +173,7 @@ export function updateChartForModel(modelId) {
   }
   const cacheKey = modelId + ':' + view;
   const lastFetchTime = _lastFetch.get(cacheKey);
-  if (lastFetchTime && Date.now() - lastFetchTime < _TTL_MS) return;
+  if (lastFetchTime && Date.now() - lastFetchTime < state.ui.chart_update_interval * 1000) return;
 
   const m = state.metrics[modelId];
   const embedded = _hasCardViewData(m?.card_buckets, view);
@@ -251,16 +245,7 @@ export function _resizeCharts() {
   }
 }
 
-export function invalidateBucketCache() {
-  localStorage.removeItem('mw_buckets_card');
-  localStorage.removeItem('mw_buckets_modal');
-  localStorage.removeItem('mw_buckets2_card');
-  localStorage.removeItem('mw_buckets2_modal');
-}
-
 let _cleanupTimer = null;
-const _CLEANUP_INTERVAL = 60_000;
-const _OFFSCREEN_DESTROY_MS = 120_000;
 const _OFFSCREEN_MARGIN = 300;
 const _offscreenSince = new Map();
 
@@ -289,7 +274,7 @@ function _startCleanupTimer() {
         continue;
       }
       if (!_offscreenSince.has(canvasId)) _offscreenSince.set(canvasId, now);
-      if (now - _offscreenSince.get(canvasId) < _OFFSCREEN_DESTROY_MS) continue;
+      if (now - _offscreenSince.get(canvasId) < state.ui.chart_offscreen_destroy * 1000) continue;
       chart.destroy();
       delete state.charts[canvasId];
       _offscreenSince.delete(canvasId);
@@ -302,7 +287,7 @@ function _startCleanupTimer() {
       const canvas = document.getElementById(canvasId);
       if (canvas && _chartObserver) _chartObserver.observe(canvas);
     }
-  }, _CLEANUP_INTERVAL);
+  }, state.ui.chart_cleanup_interval * 1000);
 }
 
 function _stopCleanupTimer() {
@@ -463,14 +448,8 @@ export function initPendingChartsInContainer(container) {
       _scheduleChartInit(canvasId);
     }
   }
-  for (const { canvas, w, h } of resizeEntries) {
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    canvas.width = w;
-    canvas.height = h;
-    const chart = state.charts[canvas.id];
-    if (chart) chart.resize();
-  }
+  // resize() applies the chart's pixel ratio to the backing store (F84)
+  for (const { canvas, w, h } of resizeEntries) state.charts[canvas.id]?.resize(w, h);
 }
 
 export function switchCardView(view) {

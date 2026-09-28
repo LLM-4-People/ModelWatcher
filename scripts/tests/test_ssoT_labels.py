@@ -5,11 +5,16 @@ and frontend ("P99 ITL (raw)") because they were maintained independently.
 
 Catches bug family #10: _EVENT_LABELS (backend) vs _TYPE_LABELS (frontend)
 were maintained independently with no contract test.
+
+F76, F77, F80: status, capability and chart view labels had frontend copies with drifting
+spellings ("Offline"/"Errors", "Thinking"/"Reasoning", chart views keyed by label); they are
+backend tables sent in /api/config, and test_frontend_rules.py keeps copies out of the frontend.
 """
 import pytest
 
 from backend.state import (
     EVENT_LABELS, METRIC_LABELS, STATUS_VALUES, TEST_TYPES, TEST_TYPE_LABELS, CHART_VIEWS, BACKEND_DIR, FRONTEND_DIR,
+    STATUS_LABELS, CHART_VIEW_LABELS, CAPABILITIES, METRIC_SHORT_LABELS, MODEL_INFO_FIELDS,
 )
 
 
@@ -30,7 +35,7 @@ def test_metric_labels_is_complete():
         "raw_avg_itl_ms", "raw_max_itl_ms", "effective_median_itl_ms",
         "effective_avg_itl_ms", "effective_p99_itl_ms", "effective_itl_tail_ratio",
         "chunk_token_ratio", "network_jitter_ms", "burst_arrival_pct",
-        "chunk_token_cv", "consistency_score", "speed_score", "reliability", "tpot_ms",
+        "chunk_token_cv", "consistency_score", "speed_score", "reliability", "tpot_ms", "uptime",
     }
     assert set(METRIC_LABELS.keys()) == expected
 
@@ -102,3 +107,34 @@ def test_config_endpoint_exposes_test_type_labels():
     """routes.py sends TEST_TYPE_LABELS in /api/config and state.js applies it."""
     assert '"test_type_labels": st.TEST_TYPE_LABELS' in (BACKEND_DIR / "routes.py").read_text()
     assert "state.testTypeLabels = cfg.test_type_labels" in (FRONTEND_DIR / "js" / "state.js").read_text()
+
+
+@pytest.mark.parametrize("table, keys", [
+    (STATUS_LABELS, STATUS_VALUES),
+    (CHART_VIEW_LABELS, CHART_VIEWS),
+    (METRIC_SHORT_LABELS, tuple(METRIC_LABELS)),
+], ids=["status", "chart_view", "metric_short"])
+def test_label_tables_cover_their_keys(table, keys):
+    assert set(table) == set(keys)
+    assert all(isinstance(v, str) and v for v in table.values())
+    assert len(set(table.values())) == len(table), "labels must tell the keys apart"
+
+
+def test_capabilities_are_model_info_fields_with_one_label_each():
+    keys = [c["key"] for c in CAPABILITIES]
+    assert len(set(keys)) == len(keys)
+    assert set(keys) <= set(MODEL_INFO_FIELDS), "a capability is a model info field"
+    for cap in CAPABILITIES:
+        assert set(cap) == {"key", "label", "desc"} and all(cap.values()), cap
+
+
+@pytest.mark.parametrize("config_key, table, state_field", [
+    ("status_labels", "STATUS_LABELS", "statusLabels"),
+    ("chart_view_labels", "CHART_VIEW_LABELS", "chartViewLabels"),
+    ("capabilities", "CAPABILITIES", "capabilities"),
+    ("metric_short_labels", "METRIC_SHORT_LABELS", "metricShortLabels"),
+])
+def test_config_endpoint_exposes_label_tables(config_key, table, state_field):
+    """routes.py sends each table in /api/config and state.js applies it."""
+    assert f'"{config_key}": st.{table}' in (BACKEND_DIR / "routes.py").read_text()
+    assert f"state.{state_field} = cfg.{config_key}" in (FRONTEND_DIR / "js" / "state.js").read_text()

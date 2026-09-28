@@ -58,8 +58,9 @@
   /* Text */
   --color-text-primary: #0f172a;
   --color-text-secondary: #334155;
-  --color-text-muted: #64748b;
-  --color-text-faint: #94a3b8;
+  /* Text tokens meet WCAG AA (4.5:1) on --color-raised and --color-overlay: test_contrast.py (F71) */
+  --color-text-muted: #4f5d70;
+  --color-text-faint: #5f6b7d;
 
   /* Borders */
   --color-border-default: rgba(203, 213, 225, .6);
@@ -67,6 +68,8 @@
 
   /* Focus / brand */
   --color-focus-ring: #3b82f6;
+  /* Text and marks on an accent-coloured surface (badges, toggles, primary buttons) */
+  --color-on-accent: #ffffff;
   --color-brand: #3b82f6;
   --color-neutral: #94a3b8;
 
@@ -98,12 +101,12 @@
   --chart-cc-scoreS: #2563eb;
   --chart-cc-scoreR: #16a34a;
 
-  /* Chart CC label colours (lighter variants for WCAG AA small-text contrast) */
-  --chart-label-cc-tps: #22d3ee;
-  --chart-label-cc-ttft: #a78bfa;
-  --chart-label-cc-uptime: #fb923c;
-  --chart-label-cc-tails: #f472b6;
-  --chart-label-cc-batching: #2dd4bf;
+  /* Chart CC label colours: text in the series colour, dark enough for AA on white */
+  --chart-label-cc-tps: #0e7490;
+  --chart-label-cc-ttft: #6d28d9;
+  --chart-label-cc-uptime: #c2410c;
+  --chart-label-cc-tails: #be185d;
+  --chart-label-cc-batching: #0f766e;
 
   /* Chart zone base colours (same RGB in both modes - consumed by JS for canvas rendering) */
   --chart-zone-base-accent: #6366f1;
@@ -124,10 +127,10 @@
   --chart-band-batching-exp: color-mix(in srgb, var(--chart-cc-batching) 32%, transparent);
 
   /* Status / glow */
-  --color-status-online: #22c55e;
-  --color-status-degraded: #f59e0b;
-  --color-status-error: #ef4444;
-  --color-status-testing: #14b8a6;
+  --color-status-online: #15803d;
+  --color-status-degraded: #b45309;
+  --color-status-error: #b91c1c;
+  --color-status-testing: #0f766e;
   --glow-online: color-mix(in srgb, var(--color-status-online) 25%, transparent);
   --glow-online-outer: color-mix(in srgb, var(--color-status-online) 8%, transparent);
   --glow-testing: color-mix(in srgb, var(--color-status-testing) 70%, transparent);
@@ -142,11 +145,11 @@
 
   /* Tier text - light mode needs darker shades for contrast */
   --color-tier-accent: #2563eb;
-  --color-tier-success: #16a34a;
-  --color-tier-warn: #d97706;
-  --color-tier-danger: #dc2626;
-  --color-tier-danger-dark: #991b1b;
-  --color-tier-teal: #0d9488;
+  --color-tier-success: #15803d;
+  --color-tier-warn: #b45309;
+  --color-tier-danger: #b91c1c;
+  --color-tier-danger-dark: #7f1d1d;
+  --color-tier-teal: #0f766e;
   /* Tier bg / border (derived from tier text - auto-adjusts in dark mode) */
   --color-tier-accent-bg: color-mix(in srgb, var(--color-tier-accent) 12%, transparent);
   --color-tier-success-bg: color-mix(in srgb, var(--color-tier-success) 12%, transparent);
@@ -283,7 +286,8 @@
   --color-tier-success: #4ade80;
   --color-tier-warn: #fbbf24;
   --color-tier-danger: #f87171;
-  --color-tier-danger-dark: #ef4444;
+  /* Critical is lighter than Bad here: a darker red would fail AA on the dark surfaces */
+  --color-tier-danger-dark: #fca5a5;
   --color-tier-teal: #2dd4bf;
   /* tier-bg / tier-border auto-derive from above via color-mix / var() */
 
@@ -319,7 +323,7 @@ html.dark::after {
   content: '';
   position: fixed;
   inset: 0;
-  z-index: 9999;
+  z-index: var(--z-grain);
   pointer-events: none;
   opacity: .025;
   background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");

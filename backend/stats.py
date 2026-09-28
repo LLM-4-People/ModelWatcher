@@ -10,7 +10,7 @@ import math
 import time
 from typing import Any
 
-from backend.state import c, log, normalize_thinking, parse_model_key
+from backend.state import c, log, normalize_thinking, parse_model_key, TREND_METRICS
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -84,71 +84,40 @@ def tier_idx(value: float, thresholds: list, higher_is_better: bool) -> int:
 
 
 def tier_continuous_score(value: float, thresholds: list, higher_is_better: bool) -> float | None:
-    """Continuous [0,1] score from piecewise linear interpolation over tier breakpoints.
+    """Continuous [0, 1] score, linear inside each tier's band of the score (finding F65).
 
-    1.0 = best possible value, 0.0 = worst possible.
-    Each threshold[i] maps to score = 1.0 - i/(n-1) for hib, or 1.0 - (i+1)/(n-1)
-    for lib (since lib tier_idx at threshold[i] is i+1). Values between thresholds
-    are linearly interpolated. Values beyond range are clamped.
-
-    Boundary semantics match tier_idx: >= for hib, < for lib.
-    For lower_is_better, a sentinel 0 in the last position (e.g. TTFT
-    [1000,3000,5000,10000,0]) means the worst tier has no finite upper bound -
-    values at or beyond the second-to-last threshold receive score 0.0.
+    thresholds are the tier boundaries best to worst, as tier_idx reads them. Both directions
+    share one mapping: the boundary after tier i scores 1 - i/(n-1), so a boundary scores the
+    same whether higher or lower is better, and the score is continuous across it. Excellent is
+    the top score 1.0 (it has no better end to interpolate towards: TPS is open-ended and uptime
+    tops out at 100%). The worst tier of a lower-is-better metric is open-ended (its threshold is
+    the 0 sentinel, config.py enforces it) and spans as far again as the tier before it. Values
+    beyond either end clamp to 0 or 1.
     """
     if value is None or not thresholds or len(thresholds) < 2:
         return None
-
-    n = len(thresholds)
-    denom = n - 1
-
-    def _lerp(lo_score, hi_score, frac):
-        return round(lo_score + frac * (hi_score - lo_score), 4)
-
+    step = 1 / (len(thresholds) - 1)
     if higher_is_better:
-        if value >= thresholds[0]:
+        # Boundary i is the lower edge of tier i; the last one closes the worst tier from below
+        edges = list(thresholds)
+        if value >= edges[0]:
             return 1.0
-        if value < thresholds[-1]:
-            return 0.0
-        for i in range(n - 1):
-            upper = thresholds[i]
-            lower = thresholds[i + 1]
-            if upper >= value > lower:
-                band = upper - lower
-                if band == 0:
-                    return round(1.0 - i / denom, 4)
-                frac = (value - lower) / band
-                return _lerp(1.0 - (i + 1) / denom, 1.0 - i / denom, frac)
-    else:
-        if value < thresholds[0]:
-            return 1.0
-        has_sentinel = n >= 2 and thresholds[-1] <= 0 < thresholds[-2]
-        if has_sentinel:
-            if value >= thresholds[-2]:
-                return 0.0
-            for i in range(n - 2):
-                lo_th = thresholds[i]
-                hi_th = thresholds[i + 1]
-                if lo_th <= value < hi_th:
-                    band = hi_th - lo_th
-                    if band == 0:
-                        return round(1.0 - (i + 1) / denom, 4)
-                    frac = (value - lo_th) / band
-                    return _lerp(1.0 - (i + 1) / denom, 1.0 - (i + 2) / denom, frac)
-        else:
-            if value >= thresholds[-1]:
-                return 0.0
-            for i in range(n - 1):
-                lo_th = thresholds[i]
-                hi_th = thresholds[i + 1]
-                if lo_th <= value < hi_th:
-                    band = hi_th - lo_th
-                    if band == 0:
-                        return round(1.0 - (i + 1) / denom, 4)
-                    frac = (value - lo_th) / band
-                    return _lerp(1.0 - (i + 1) / denom, 1.0 - (i + 2) / denom, frac)
-
-    return round(1.0 - tier_idx(value, thresholds, higher_is_better) / denom, 4)
+        for i in range(1, len(edges)):
+            if value >= edges[i]:
+                frac = (value - edges[i]) / (edges[i - 1] - edges[i])
+                return round(1.0 - i * step + frac * step, 4)
+        return 0.0
+    # Boundary i is the upper edge of tier i; the worst tier ends one tier width past the last
+    bounds = list(thresholds[:-1])
+    width = bounds[-1] - bounds[-2] if len(bounds) > 1 else bounds[-1]
+    edges = bounds + [bounds[-1] + width]
+    if value < edges[0]:
+        return 1.0
+    for i in range(1, len(edges)):
+        if value < edges[i]:
+            frac = (value - edges[i - 1]) / (edges[i] - edges[i - 1])
+            return round(1.0 - (i - 1) * step - frac * step, 4)
+    return 0.0
 
 
 # ── Per-test stall position metrics ────────────────────────────────────────
@@ -374,13 +343,6 @@ def bench_only(records: list[dict]) -> list[dict]:
     """Filter records to benchmark-only (excludes health checks)."""
     return [r for r in records if r.get("test_type", "benchmark") == "benchmark"]
 
-_TREND_METRICS = [
-    "tps", "ttft_ms", "stall_count", "raw_p99_itl_ms",
-    "effective_itl_tail_ratio", "chunk_token_ratio",
-    "consistency_score", "speed_score",
-    "available", "reliability_score",
-]
-
 _TREND_HIB = {
     "tps": True, "ttft_ms": False, "stall_count": False,
     "raw_p99_itl_ms": False, "effective_itl_tail_ratio": False,
@@ -395,135 +357,70 @@ _TREND_UNITS = {
     "speed_score": "pts", "available": "pp", "reliability_score": "pts",
 }
 
-_TREND_THRESHOLDS = {
-    "tps": 5.0, "ttft_ms": 500.0, "stall_count": 1.0,
-    "raw_p99_itl_ms": 20.0, "effective_itl_tail_ratio": 0.5,
-    "chunk_token_ratio": 0.5, "consistency_score": 5.0,
-    "speed_score": 5.0, "available": 5.0, "reliability_score": 5.0,
-}
 
-_TREND_BINARY = frozenset({"available"})
-
-_TREND_MIN_RECENT = 3
+def _record_ts(record: dict) -> float:
+    return record.get("_ts_epoch") or record.get("ts_epoch") or 0
 
 
-def _sliding_medianCompare(baseline: list[float], recent: list[float],
-                            hib: bool, threshold: float) -> dict | None:
-    """Compare medians of baseline (75% window) vs recent (25% window).
-
-    Returns {direction, change} or None if insufficient data. change is the
-    absolute delta (recent - baseline) in the metric's native unit. For
-    lower_is_better metrics the sign is flipped so positive = improving.
-    """
-    bl_med = _median(baseline)
-    rc_med = _median(recent)
-    if bl_med is None or rc_med is None:
-        return None
-
-    delta = rc_med - bl_med
-    if not hib:
+def _trend_entry(metric: str, baseline: float, recent: float, data_points: int) -> dict:
+    """Direction and size of the move from baseline to recent. delta is signed with positive =
+    improving (lower-is-better metrics flip), so aggregates can combine opposite moves (F63)."""
+    delta = recent - baseline
+    if not _TREND_HIB[metric]:
         delta = -delta
-
-    if abs(delta) < threshold:
-        return {"direction": "stable", "change": round(abs(rc_med - bl_med), 2)}
-    return {"direction": "improving" if delta > 0 else "degrading",
-            "change": round(abs(rc_med - bl_med), 2)}
+    direction = "stable"
+    if abs(delta) >= c.trend_deadbands[metric]:
+        direction = "improving" if delta > 0 else "degrading"
+    return {"direction": direction, "change": round(abs(delta), 2), "delta": round(delta, 2),
+            "unit": _TREND_UNITS[metric], "data_points": data_points}
 
 
 def compute_trends(records: list[dict], color_thresholds: dict | None = None) -> dict[str, dict]:
-    """Compute trend direction and absolute change using 75/25 sliding median.
+    """Trend per metric: the median of the last metrics.trend_window against the median before it.
 
-    Splits records: first 75% = baseline (stable reference), last 25% = recent
-    (current state). Compares median of each window per metric.
+    Records may arrive in any order (the SQL path reads newest first, which inverted every modal
+    trend: finding F60), so they are sorted by time here. The recent window is measured back from
+    the newest record. A window holding fewer than metrics.min_data_points_trend values yields no
+    trend for that metric instead of a direction from a handful of tests (F62); a move inside the
+    metric's deadband (metrics.trend_deadbands) is "stable".
 
-    Returns {metric: {"direction": "improving"|"degrading"|"stable",
-                       "change": float, "unit": str, "data_points": int}}
-    Plus "since_ts" = timestamp of first record in the range.
+    Returns {metric: {"direction": "improving"|"degrading"|"stable", "change": float (absolute),
+    "delta": float (signed, positive = improving), "unit": str, "data_points": int (recent window)}}
+    plus "since_ts", the time of the oldest record.
     """
+    recs = sorted((r for r in records if _record_ts(r)), key=_record_ts)
+    if not recs:
+        return {}
     min_pts = c.min_data_points_trend
-    n = len(records)
-    if n < min_pts:
-        return {}
-
-    first_ts = (records[0].get("_ts_epoch") or records[0].get("ts_epoch")) if records else None
-    since_ts = first_ts
-
-    split = max(1, int(n * 0.75))
-    baseline_recs = records[:split]
-    recent_recs = records[split:]
-
-    if len(recent_recs) < _TREND_MIN_RECENT:
-        return {}
-
-    log.debug("trends: n=%d split=%d/%d since=%s", n, len(baseline_recs), len(recent_recs),
-              since_ts and time.strftime("%Y-%m-%d %H:%M", time.gmtime(since_ts)) or "?")
-
-    trends = {}
-
-    for metric in _TREND_METRICS:
-        threshold = _TREND_THRESHOLDS.get(metric, 5.0)
-        hib = _TREND_HIB.get(metric, True)
-        unit = _TREND_UNITS.get(metric, "")
-
-        if metric in _TREND_BINARY:
-            bl_vals = [bool(r.get("available")) for r in baseline_recs if r.get("available") is not None]
-            rc_vals = [bool(r.get("available")) for r in recent_recs if r.get("available") is not None]
-            if not bl_vals or not rc_vals:
+    cutoff = _record_ts(recs[-1]) - c.trend_window
+    baseline_recs = [r for r in recs if _record_ts(r) <= cutoff]
+    recent_recs = [r for r in recs if _record_ts(r) > cutoff]
+    trends: dict = {}
+    for metric in TREND_METRICS:
+        if metric == "available":
+            bl = [bool(r["available"]) for r in baseline_recs if r.get("available") is not None]
+            rc = [bool(r["available"]) for r in recent_recs if r.get("available") is not None]
+            if len(bl) < min_pts or len(rc) < min_pts:
                 continue
-            bl_rate = sum(bl_vals) / len(bl_vals) * 100
-            rc_rate = sum(rc_vals) / len(rc_vals) * 100
-            delta = rc_rate - bl_rate
-            eff_delta = delta if hib else -delta
-            direction = "stable"
-            if abs(delta) >= threshold:
-                direction = "improving" if eff_delta > 0 else "degrading"
-            trends[metric] = {
-                "direction": direction,
-                "change": round(abs(delta), 1),
-                "unit": unit,
-                "data_points": len(rc_vals),
-            }
-            continue
-
-        if metric == "reliability_score":
+            trends[metric] = _trend_entry(metric, sum(bl) / len(bl) * 100, sum(rc) / len(rc) * 100, len(rc))
+        elif metric == "reliability_score":
+            if len(baseline_recs) < min_pts or len(recent_recs) < min_pts:
+                continue
             bl_r = compute_range_reliability(baseline_recs, color_thresholds=color_thresholds)
             rc_r = compute_range_reliability(recent_recs, color_thresholds=color_thresholds)
             if bl_r is None or rc_r is None:
                 continue
-            delta = rc_r - bl_r
-            direction = "stable"
-            if abs(delta) >= threshold:
-                direction = "improving" if delta > 0 else "degrading"
-            trends[metric] = {
-                "direction": direction,
-                "change": round(abs(delta), 1),
-                "unit": unit,
-                "data_points": len(recent_recs),
-            }
-            continue
-
-        bl_vals = [r[metric] for r in baseline_recs if r.get(metric) is not None]
-        rc_vals = [r[metric] for r in recent_recs if r.get(metric) is not None]
-        if len(bl_vals) < min_pts or len(rc_vals) < _TREND_MIN_RECENT:
-            continue
-
-        result = _sliding_medianCompare(bl_vals, rc_vals, hib, threshold)
-        if result is None:
-            continue
-
-        trends[metric] = {
-            "direction": result["direction"],
-            "change": result["change"],
-            "unit": unit,
-            "data_points": len(rc_vals),
-        }
-
-    if since_ts is not None:
-        trends["since_ts"] = since_ts
-
-    log.debug("trends: computed %d metrics: %s", len({k: v for k, v in trends.items() if k != "since_ts"}),
-              ", ".join(f"{k}={v['direction']}" for k, v in sorted(trends.items()) if k != "since_ts"))
-
+            trends[metric] = _trend_entry(metric, bl_r, rc_r, len(recent_recs))
+        else:
+            bl = [r[metric] for r in baseline_recs if r.get(metric) is not None]
+            rc = [r[metric] for r in recent_recs if r.get(metric) is not None]
+            if len(bl) < min_pts or len(rc) < min_pts:
+                continue
+            trends[metric] = _trend_entry(metric, _median(bl), _median(rc), len(rc))
+    if trends:
+        trends["since_ts"] = _record_ts(recs[0])
+    log.debug("trends: %d baseline / %d recent records, %d metrics", len(baseline_recs), len(recent_recs),
+              len(trends) - ("since_ts" in trends))
     return trends
 
 
@@ -535,6 +432,13 @@ CARD_VIEW_METRICS = {
     "scores": ["consistency_score", "speed_score"],
     "health": ["ttft_ms"],
 }
+
+
+def _view_records(records: list[dict], view: str) -> list[dict]:
+    """The results a chart view plots: health checks for the Health view, benchmarks for the rest
+    (finding F61: the card Health view plotted benchmark TTFT)."""
+    health = view == "health"
+    return [r for r in records if (r.get("test_type", "benchmark") == "health") == health]
 
 
 def _aggregate_card_bucket(records: list[dict], bucket_start: float,
@@ -563,9 +467,10 @@ def _aggregate_card_bucket(records: list[dict], bucket_start: float,
     views = CARD_VIEW_METRICS if view == "all" else {view: CARD_VIEW_METRICS.get(view, CARD_VIEW_METRICS["speed"])}
     per_view: dict[str, dict] = {}
     for vname, fields in views.items():
-        vdata: dict = {}
+        src = _view_records(records, vname)
+        vdata: dict = {"count": len(src)}
         for field in fields:
-            vals = [r[field] for r in records if r.get(field) is not None]
+            vals = [r[field] for r in src if r.get(field) is not None]
             vdata[field] = _median(vals) if vals else None
             if len(vals) > 1 and vname != "scores":
                 sv = sorted(vals)
@@ -640,6 +545,19 @@ def _aggregate_modal_bucket(records: list[dict], bucket_start: float,
     base["reliability_score"] = {"avg": _bucket_reliability(ar, dr)} if records else None
 
     return base
+
+
+def bucket_rows(rows: list[dict], bucket_width: float, detail: str, view: str) -> list[dict]:
+    """Aggregate database rows into buckets on the absolute grid floor(ts / width) * width, with
+    the same per-bucket functions as the in-memory path (finding F64). Each bucket keeps its grid
+    start as bucket_ts, which cross-type overlays match on."""
+    if bucket_width <= 0:
+        return []
+    groups: dict[float, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(math.floor(r["ts_epoch"] / bucket_width) * bucket_width, []).append(r)
+    agg = _aggregate_card_bucket if detail == "card" else _aggregate_modal_bucket
+    return [{**agg(groups[bts], bts, view), "bucket_ts": bts} for bts in sorted(groups)]
 
 
 def _mean_ts(records: list[dict]) -> float | None:
@@ -768,12 +686,8 @@ def _attach_cross_ttft(bucket_data: list[dict], model_key: str,
     """
     if not bucket_data or bucket_width <= 0:
         return
-    if cross_type == "benchmark":
-        cross_buckets = db.query_bucketed_history(model_key, since, bucket_width,
-                                                   "benchmark", detail, "speed")
-    else:
-        cross_buckets = db.query_bucketed_health(model_key, since, bucket_width,
-                                                   flat=(detail == "card"), until=until)
+    cross_view = "speed" if cross_type == "benchmark" else "health"
+    cross_buckets = bucket_rows(db.query_bucket_rows(model_key, cross_type, since, until), bucket_width, detail, cross_view)
     if not cross_buckets:
         return
     cross_map: dict[float, Any] = {}
@@ -895,7 +809,7 @@ def compute_bucketed_history(records: list[dict], buckets: int,
                     empty[field] = None
             elif is_all:
                 for vname, vfields in fields.items():
-                    vempty: dict = {}
+                    vempty: dict = {"count": 0}
                     for field in vfields:
                         vempty[field] = None
                         if vname != "scores":
@@ -992,9 +906,9 @@ def cached_card_buckets(entry: dict) -> dict:
     if cached is not None and entry.get("_card_buckets_version") == entry.get("_scores_version"):
         return cached
     history = entry.get("recent_history", [])
-    bench = bench_only(history) if history else []
-    if bench:
-        combined = compute_bucketed_history(bench, 20, "card", "all")
+    if history:
+        # Benchmarks and health checks together: each view picks its own results (_view_records)
+        combined = compute_bucketed_history(history, 20, "card", "all")
         combined = _filter_no_primary_all(combined)
         cb = _split_card_buckets(combined)
     else:
@@ -1064,40 +978,19 @@ def find_critical_metrics(result: dict, color_thresholds: dict | None = None) ->
     return critical
 
 
-def _median_trend(trends: list[dict]) -> dict | None:
-    """Aggregate per-model trend dicts into a single median trend.
-
-    Direction is by majority vote; change is averaged.
-    """
-    if not trends:
+def _provider_trend(metric: str, trends: list[dict]) -> dict | None:
+    """One provider trend from its models' trends: the median of their signed deltas, with the
+    direction from that median and the same deadband a model uses, so opposite moves cancel
+    instead of being out-voted and averaged apart (finding F63). models counts the models."""
+    deltas = [t["delta"] for t in trends if t.get("delta") is not None]
+    if not deltas:
         return None
-    improving = degrading = 0
-    total_change = 0.0
-    valid = 0
-    unit = trends[0].get("unit", "") if trends[0] else ""
-    for t in trends:
-        if not t.get("direction"):
-            continue
-        if t.get("unit") and t["unit"] != unit:
-            continue
-        if t["direction"] == "improving":
-            improving += 1
-        elif t["direction"] == "degrading":
-            degrading += 1
-        total_change += t.get("change") or 0
-        valid += 1
-    if not valid:
-        return None
-    is_int = unit in ("pts", "pp")
-    avg = total_change / valid
-    avg_change = round(avg) if is_int else round(avg, 1)
-    if improving > degrading:
-        direction = "improving"
-    elif degrading > improving:
-        direction = "degrading"
-    else:
-        direction = "stable"
-    return {"direction": direction, "change": avg_change, "unit": unit, "data_points": valid}
+    med = _median(deltas)
+    direction = "stable"
+    if abs(med) >= c.trend_deadbands[metric]:
+        direction = "improving" if med > 0 else "degrading"
+    return {"direction": direction, "change": round(abs(med), 1), "delta": round(med, 1),
+            "unit": _TREND_UNITS[metric], "models": len(deltas)}
 
 
 _PROVIDER_SCORE_TRENDS = ("consistency_score", "speed_score", "reliability_score")
@@ -1165,17 +1058,13 @@ def compute_provider_summaries(
             if ts is not None and (since_ts is None or ts < since_ts):
                 since_ts = ts
 
-        agg_scores = {}
-        if cs:
-            agg_scores["consistency"] = _median(cs)
-        if ss:
-            agg_scores["speed"] = _median(ss)
-        if rs:
-            agg_scores["reliability"] = _median(rs)
+        # Rounded like the model scores they summarise
+        agg_scores = {name: round(_median(vals), 1) for name, vals in
+                      (("consistency", cs), ("speed", ss), ("reliability", rs)) if vals}
 
         agg_trends = {}
         for key, arr in zip(_PROVIDER_SCORE_TRENDS, (ct, st_t, rt)):
-            mt = _median_trend(arr)
+            mt = _provider_trend(key, arr)
             if mt:
                 agg_trends[key] = mt
 
@@ -1368,7 +1257,7 @@ def build_chart_response(model_key: str, since: float | None, buckets: int,
         # Health data is not in recent_history - always query SQL.
         health_range = db.query_time_range(model_key, "health", since, until)
         _, _, bucket_width = _bucket_params(*health_range, buckets) if health_range else (0, 0, 1)
-        bucket_data = db.query_bucketed_health(model_key, since, bucket_width, flat=(detail == "card"), until=until)
+        bucket_data = bucket_rows(db.query_bucket_rows(model_key, "health", since, until), bucket_width, detail, "health")
         bucket_data = _trim_empty_buckets(bucket_data)
         scores = cached_range_scores(entry)
         trends = entry.get("trends", {})
@@ -1390,20 +1279,8 @@ def build_chart_response(model_key: str, since: float | None, buckets: int,
         # SQL-based bucketing - compute bucket width from actual data range
         bench_range = db.query_time_range(model_key, test_type or "benchmark", since, until)
         _, _, bucket_width = _bucket_params(*bench_range, buckets) if bench_range else (0, 0, 1)
-        bucket_data = db.query_bucketed_history(model_key, since, bucket_width, test_type, detail, view, until=until)
-        bucket_data = _trim_empty_buckets(bucket_data)
-        # Add reliability_score (SQL doesn't compute it)
-        if detail == "card":
-            for b in bucket_data:
-                ar = b.get("available_rate", 0)
-                dr = b.get("degraded_rate", 0)
-                b["reliability_score"] = _bucket_reliability(ar, dr) if ar is not None else None
-        elif detail == "modal":
-            for b in bucket_data:
-                ar = b.get("available_rate", 0)
-                dr = b.get("degraded_rate", 0)
-                rv = _bucket_reliability(ar, dr) if ar is not None else None
-                b["reliability_score"] = {"avg": rv} if rv is not None else None
+        bucket_data = bucket_rows(db.query_bucket_rows(model_key, test_type or "benchmark", since, until),
+                                  bucket_width, detail, view)
         # Also load raw records for range-aware scoring
         cap = c.history_query_limit
         range_records = db.get_model_history(model_key, cap, test_type="benchmark", since=since, until=until)

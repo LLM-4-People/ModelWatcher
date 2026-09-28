@@ -1,8 +1,8 @@
 // Notification UI, toasts, push init, and settings panel. Server-side prefs
 // are the single enforcement point; client-side handleNotification applies
 // partial defense-in-depth (master toggle + popups + recovery grounding).
-import { state, _NOTIF_OPTS, LS } from './state.js';
-import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, parseModelKey, initSheetDrag, BP_SM, setText, setHTML, collapsibleHTML, toggleCollapsible, STATUS_GLYPH, SEP_TEXT } from './utils.js';
+import { state, _NOTIF_OPTS, LS, BOOT, parseModelKey, isProviderKey } from './state.js';
+import { esc, logError, logWarn, logInfo, logDebug, logTag, cap, initSheetDrag, isPhone, setText, setHTML, collapsibleHTML, toggleCollapsible, STATUS_GLYPH, SEP_TEXT, pushLayer, trapFocus } from './utils.js';
 import { TIER_TEXT, TIER_BG, timeAgo } from './format.js';
 import { api } from './api.js';
 import { cacheGet, cacheSet } from './cache.js';
@@ -10,13 +10,11 @@ import { openModal } from './modal-loader.js';
 import { buildNotifPrefs, syncWSPrefs } from './prefs.js';
 
 const _MAX_TOASTS = 4;
-const _DEFAULT_TOAST_MS = 5000;
 const _TOAST_REMOVE_FALLBACK_MS = 300;
 const _MAX_DROPDOWN_ITEMS = 20;
 const _MAX_READ_IDS = 200;
 const _REFRESH_INTERVAL_MS = 30 * 1000;
 const _PUSH_TEST_RESET_MS = 2500;
-const _DEFAULT_HISTORY_CAP = 50;
 
 let _closeHelpPanelFn = null;
 export function setCloseHelpPanel(fn) { _closeHelpPanelFn = fn; }
@@ -67,37 +65,37 @@ function _iterOptsFlat() {
 
 function _loadNotifSettings() {
   try {
-    const s = JSON.parse(localStorage.getItem('mw_notif_settings'));
+    const s = JSON.parse(localStorage.getItem(LS.NOTIF_SETTINGS));
     if (s) {
       // Clean up legacy `recovered` field - derived in prefs.js from recovered_offline||recovered_degraded
       delete s.recovered;
       Object.assign(state._notifSettings, s);
     }
-    const enabledAt = localStorage.getItem('mw_notif_enabled_at');
+    const enabledAt = localStorage.getItem(LS.NOTIF_ENABLED_AT);
     if (enabledAt) state._notifEnabledAt = enabledAt;
-    if (localStorage.getItem('mw_notif_local') === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted') state._notifyLocal = true;
+    if (localStorage.getItem(LS.NOTIF_LOCAL) === '1' && typeof Notification !== 'undefined' && Notification.permission === 'granted') state._notifyLocal = true;
   } catch (e) { logError(logTag('Notif', '←', 'Error', 'SettingsLoad'), e); }
 }
 
 function _saveNotifSettings() {
-  localStorage.setItem('mw_notif_settings', JSON.stringify(state._notifSettings));
+  localStorage.setItem(LS.NOTIF_SETTINGS, JSON.stringify(state._notifSettings));
   syncWSPrefs();
   _syncPushPrefs().catch(e => { logError(logTag('Push', '←', 'Error', 'PrefsSync'), e); });
 }
 
 function _saveNotifyLocal() {
-  localStorage.setItem('mw_notif_local', state._notifyLocal ? '1' : '0');
+  localStorage.setItem(LS.NOTIF_LOCAL, state._notifyLocal ? '1' : '0');
 }
 
 function _saveNotifHistory() {
   try {
-    localStorage.setItem('mw_notif_history', JSON.stringify(state._notifHistory));
+    localStorage.setItem(LS.NOTIF_HISTORY, JSON.stringify(state._notifHistory));
   } catch (e) { logError(logTag('Notif', '←', 'Error', 'HistorySave'), e); }
 }
 
 function _loadNotifHistory() {
   try {
-    const stored = JSON.parse(localStorage.getItem('mw_notif_history'));
+    const stored = JSON.parse(localStorage.getItem(LS.NOTIF_HISTORY));
     if (Array.isArray(stored) && stored.length) {
       const enabledAt = state._notifEnabledAt;
       state._notifHistory = enabledAt ? stored.filter(n => n.timestamp > enabledAt) : stored;
@@ -145,11 +143,11 @@ function _clearNotifHistory() {
 function _markNotifRead(id) {
   if (!id) return;
   try {
-    const ids = JSON.parse(localStorage.getItem('mw_notif_read_ids') || '[]');
+    const ids = JSON.parse(localStorage.getItem(LS.NOTIF_READ_IDS) || '[]');
     if (!ids.includes(id)) {
       ids.push(id);
       if (ids.length > _MAX_READ_IDS) ids.splice(0, ids.length - _MAX_READ_IDS);
-      localStorage.setItem('mw_notif_read_ids', JSON.stringify(ids));
+      localStorage.setItem(LS.NOTIF_READ_IDS, JSON.stringify(ids));
     }
   } catch (e) { logError(logTag('Notif', '←', 'Error', 'ReadIdsSave'), e); }
 }
@@ -262,7 +260,7 @@ export function handleNotification(notif) {
   if (_degradedChildren.includes(evt) && !state._notifSettings.degraded) return;
 
   state._notifHistory.unshift(notif);
-  const historyCap = state._notifServerConfig?.in_app?.history_size || _DEFAULT_HISTORY_CAP;
+  const historyCap = state.ui.notif_history_size;
   if (state._notifHistory.length > historyCap) state._notifHistory.length = historyCap;
   state._notifUnread++;
   _syncNotifUI();
@@ -276,7 +274,7 @@ export function handleNotification(notif) {
       const model = _displayName(notif.model_key);
       const title = _notifTitle(provider, model, notif);
       const tag = 'mw-' + notif.model_key + (notif.action ? `-${notif.action}` : '');
-      new Notification(title, { body: notif.body || '', icon: (window.__STATIC_PREFIX__ || '/frontend') + '/icon-192.png', tag });
+      new Notification(title, { body: notif.body || '', icon: `${BOOT.static_prefix}/icon-192.png`, tag });
     } catch (e) { logError(logTag('Notif', '\u2190', 'Error', 'BrowserNotify'), e); }
   }
 }
@@ -303,7 +301,7 @@ function showToast(notif) {
   el.addEventListener('click', (e) => {
     if (e.target.classList.contains('toast-dismiss')) { dismissToast(el); return; }
     dismissToast(el);
-    if (!notif.model_key.endsWith('::')) openModal(notif.model_key);
+    if (!isProviderKey(notif.model_key)) openModal(notif.model_key);
   });
   container.appendChild(el);
   const maxToasts = _MAX_TOASTS;
@@ -312,7 +310,7 @@ function showToast(notif) {
     if (oldest._dismissTimer) { clearTimeout(oldest._dismissTimer); oldest._dismissTimer = null; }
     oldest.remove();
   }
-  const duration = state._notifServerConfig?.in_app?.toast_duration_ms || _DEFAULT_TOAST_MS;
+  const duration = state.ui.toast_duration_ms;
   const timer = setTimeout(() => dismissToast(el), duration);
   el._dismissTimer = timer;
   const pause = () => { if (el._dismissTimer) { clearTimeout(el._dismissTimer); el._dismissTimer = null; } };
@@ -372,7 +370,7 @@ function _activateNotifItem(item) {
     _syncNotifUI();
   }
   closeNotifPanel();
-  if (modelKey && !modelKey.endsWith('::')) openModal(modelKey);
+  if (modelKey && !isProviderKey(modelKey)) openModal(modelKey);
 }
 
 function renderNotifDropdownList() {
@@ -440,7 +438,7 @@ function _openNotifPanel(forceView, triggerId) {
   const backdrop = document.getElementById('notif-backdrop');
   if (!panel) return;
   if (_closeHelpPanelFn) _closeHelpPanelFn();
-  if (window.innerWidth >= BP_SM) {
+  if (!isPhone()) {
     const btn = document.getElementById(_panelOpenTrigger) || document.getElementById('notify-btn');
     if (btn) {
       const r = btn.getBoundingClientRect();
@@ -452,17 +450,19 @@ function _openNotifPanel(forceView, triggerId) {
   }
   panel.classList.add('open');
   _setPanelExpanded(true);
-  if (backdrop && window.innerWidth < BP_SM) backdrop.classList.add('open');
+  if (backdrop && isPhone()) backdrop.classList.add('open');
   const view = forceView || (state._notifSettings.enabled ? 'list' : 'settings');
   _switchPanelView(view);
   renderNotifDropdownList();
   if (Date.now() - _lastRefreshAt > _REFRESH_INTERVAL_MS) refreshNotifHistory();
-  // Focus the first actionable element in the active view header (accessibility)
-  requestAnimationFrame(() => {
-    const activeHeader = document.querySelector('.notif-panel-header:not(.hidden)');
-    activeHeader?.querySelector('button')?.focus();
-  });
+  // A layer for Escape, focus inside and the page inert until it closes (findings F49, F72)
+  _popLayer = pushLayer(closeNotifPanel);
+  const trigger = document.getElementById(_panelOpenTrigger) || document.getElementById('notify-btn');
+  _releaseFocus = trapFocus(panel, { focus: document.querySelector('.notif-panel-header:not(.hidden) button') || panel, keep: [backdrop], returnTo: trigger });
 }
+
+let _popLayer = null;
+let _releaseFocus = null;
 
 export function closeNotifPanel() {
   const panel = document.getElementById('notif-panel');
@@ -479,8 +479,10 @@ export function closeNotifPanel() {
   panel.style.transition = '';
   if (backdrop) backdrop.classList.remove('open');
   if (wasOpen) {
-    const trigger = document.getElementById(_panelOpenTrigger) || document.getElementById('notify-btn');
-    if (trigger) { try { trigger.focus({ preventScroll: true }); } catch (e) { logWarn(logTag('Notif', '\u2190', 'Focus'), e); } }
+    _popLayer?.();
+    _popLayer = null;
+    _releaseFocus?.();
+    _releaseFocus = null;
   }
 }
 
@@ -537,7 +539,7 @@ export function syncNotifSettingsUI() {
   for (const child of (_degradedOpt?.children || [])) {
     if (!child.tier_picker) continue;
     const tierKey = child.tier_picker;
-    const tierVal = s[tierKey] ?? state._notifServerConfig?.[tierKey] ?? 2;
+    const tierVal = s[tierKey] ?? state._notifServerConfig?.[tierKey];
     _renderTierPicker(`${tierKey}-tiers`, tierVal, tierKey, child.metric);
     const tierRow = document.getElementById(`${tierKey}-tier-row`);
     if (tierRow) tierRow.classList.toggle('hidden', !_alertOn(child.key));
@@ -645,7 +647,9 @@ function _renderTierPicker(containerId, activeIdx, settingKey, metric, focusActi
     const cls = on
       ? `tier-seg-opt active ${TIER_TEXT[t.color] || ''} ${TIER_BG[t.color] || ''}`
       : 'tier-seg-opt';
-    return `<button type="button" class="${cls}" role="radio" aria-checked="${on}" tabindex="${on ? '0' : '-1'}" data-idx="${i}">${label}</button>`;
+    // Roving focus: the checked option, or the first while the tier is not known yet
+    const focusable = i === (activeIdx ?? 0);
+    return `<button type="button" class="${cls}" role="radio" aria-checked="${on}" tabindex="${focusable ? '0' : '-1'}" data-idx="${i}">${label}</button>`;
   }).join(''));
   if (focusActive) container.querySelector(`[data-idx="${activeIdx}"]`)?.focus();
   const opts = container.querySelectorAll('.tier-seg-opt');
@@ -821,19 +825,19 @@ async function _handleToggleClick(opt, el) {
   if (isMaster) {
     if (newVal) {
       state._notifEnabledAt = new Date().toISOString();
-      localStorage.setItem('mw_notif_enabled_at', state._notifEnabledAt);
+      localStorage.setItem(LS.NOTIF_ENABLED_AT, state._notifEnabledAt);
     } else {
       state._notifEnabledAt = null;
-      localStorage.removeItem('mw_notif_enabled_at');
+      localStorage.removeItem(LS.NOTIF_ENABLED_AT);
     }
   }
   _setToggle(el.id, newVal);
 
   try {
     if (isSlow) { await window._pushInitPromise; await window._disablePush?.(); }
-    if (isMaster && newVal && opt.onFirstEnable && !localStorage.getItem('mw_notif_enabled_once')) {
+    if (isMaster && newVal && opt.onFirstEnable && !localStorage.getItem(LS.NOTIF_ENABLED_ONCE)) {
       for (const k of opt.onFirstEnable) state._notifSettings[k] = true;
-      localStorage.setItem('mw_notif_enabled_once', '1');
+      localStorage.setItem(LS.NOTIF_ENABLED_ONCE, '1');
     }
     _saveNotifSettings();
     syncNotifSettingsUI();
@@ -841,11 +845,11 @@ async function _handleToggleClick(opt, el) {
       _clearNotifHistory();
     } else if (isMaster && newVal) {
       refreshNotifHistory();
-      if (Notification.permission !== 'denied' && !window._pushSub && !localStorage.getItem('mw_push_opt_out')) {
+      if (Notification.permission !== 'denied' && !window._pushSub && !localStorage.getItem(LS.PUSH_OPT_OUT)) {
         logInfo(logTag('Push', '→', 'AutoEnable', 'master toggle on - requesting push permission'));
         window._pushInitPromise.then(() => window._requestPushPermission?.()).then(() => syncNotifSettingsUI()).catch(e => logError(logTag('Push', '←', 'Error', 'PermissionRequest'), e));
       } else {
-        logDebug(logTag('Push', '→', 'AutoEnable', `skipped - perm=${Notification.permission} hasSub=${!!window._pushSub} optOut=${localStorage.getItem('mw_push_opt_out') === '1'}`));
+        logDebug(logTag('Push', '→', 'AutoEnable', `skipped - perm=${Notification.permission} hasSub=${!!window._pushSub} optOut=${localStorage.getItem(LS.PUSH_OPT_OUT) === '1'}`));
       }
     }
   } catch (e) {
@@ -854,8 +858,8 @@ async function _handleToggleClick(opt, el) {
     else { s[opt.key] = prevVal; }
     if (isMaster) {
       state._notifEnabledAt = prevEnabledAt;
-      if (prevEnabledAt) localStorage.setItem('mw_notif_enabled_at', prevEnabledAt);
-      else localStorage.removeItem('mw_notif_enabled_at');
+      if (prevEnabledAt) localStorage.setItem(LS.NOTIF_ENABLED_AT, prevEnabledAt);
+      else localStorage.removeItem(LS.NOTIF_ENABLED_AT);
     }
     _setToggle(el.id, !newVal);
     logError(logTag('Notif', '←', 'Error', 'Toggle'), e);
@@ -877,7 +881,7 @@ function buildSettings() {
   for (const child of (_degradedOpt?.children || [])) {
     if (!child.tier_picker) continue;
     const tierKey = child.tier_picker;
-    const tierVal = state._notifSettings[tierKey] ?? state._notifServerConfig?.[tierKey] ?? 2;
+    const tierVal = state._notifSettings[tierKey] ?? state._notifServerConfig?.[tierKey];
     _renderTierPicker(`${tierKey}-tiers`, tierVal, tierKey, child.metric);
   }
   // Render provider filters + server info (populated into the topic groups)
@@ -908,7 +912,7 @@ export function refreshNotifHistory() {
     if (!cfg) return;
     state._notifServerConfig = cfg;
     const serverHistory = cfg.history || [];
-    const readIds = new Set(JSON.parse(localStorage.getItem('mw_notif_read_ids') || '[]'));
+    const readIds = new Set(JSON.parse(localStorage.getItem(LS.NOTIF_READ_IDS) || '[]'));
     const serverItems = serverHistory.filter(n => {
       if (!n || !n.id) return false;
       if (readIds.has(n.id)) return false;
@@ -919,7 +923,7 @@ export function refreshNotifHistory() {
     const merged = [...serverItems, ...localItems];
     merged.sort((a, b) => Date.parse(b.timestamp || 0) - Date.parse(a.timestamp || 0));
     const grounded = merged.filter(n => _isRecoveryGrounded(n));
-    const historyCap = cfg.in_app?.history_size || _DEFAULT_HISTORY_CAP;
+    const historyCap = state.ui.notif_history_size;
     if (grounded.length > historyCap) grounded.length = historyCap;
     state._notifHistory = grounded;
     state._notifUnread = grounded.length;
@@ -1032,7 +1036,7 @@ export function initNotifSystem() {
           } catch (e) { setText(pushTestBtn, 'Error'); logError(logTag('Push', '←', 'Error', 'TestSend'), e); }
         } else if (Notification.permission === 'granted') {
           try {
-            new Notification((window.__APP_NAME__ || 'ModelWatcher') + ' test', { body: 'Notifications are working!', tag: 'mw-test' });
+            new Notification(`${BOOT.app_name} test`, { body: 'Notifications are working!', tag: 'mw-test' });
             setText(pushTestBtn, 'Sent! (local)');
           } catch (e) { setText(pushTestBtn, 'Failed'); logError(logTag('Push', '←', 'Error', 'LocalTest'), e); }
         } else {
@@ -1058,7 +1062,7 @@ export async function initPush() {
   if (!('Notification' in window)) { logInfo(logTag('Push', '←', 'Unavailable')); document.documentElement.classList.remove('bell-fouc-on', 'bell-fouc-active'); _updateBellIcon(); return; }
   const perm = Notification.permission;
   const canPush = 'serviceWorker' in navigator && 'PushManager' in window;
-  const optOut = localStorage.getItem('mw_push_opt_out') === '1';
+  const optOut = localStorage.getItem(LS.PUSH_OPT_OUT) === '1';
   logInfo(logTag('Push', '→', 'Init', `perm=${perm} canPush=${canPush} optOut=${optOut} clientId=${_getClientId()}`));
   if (perm === 'denied') {
     logInfo(logTag('Push', '←', 'Denied'));
@@ -1068,17 +1072,17 @@ export async function initPush() {
   if (canPush) {
     let keyResp = await cacheGet('vapid_key');
     if (keyResp) logDebug(logTag('Push', '←', 'VAPID', 'cache hit'));
-    else { keyResp = await api('/api/vapid-key'); if (keyResp) { cacheSet('vapid_key', keyResp, 86400); logDebug(logTag('Push', '←', 'VAPID', 'fetched from API')); } }
+    else { keyResp = await api('/api/vapid-key'); if (keyResp) { cacheSet('vapid_key', keyResp, state.ui.cache_ttl.vapid_key); logDebug(logTag('Push', '←', 'VAPID', 'fetched from API')); } }
     if (keyResp?.public_key) {
       vapidKey = Uint8Array.from(atob(keyResp.public_key.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
       try {
         reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
         await navigator.serviceWorker.ready;
         logDebug(logTag('Push', '←', 'SW', 'registered'));
-        if (!localStorage.getItem('mw_sw_cleanup_done')) {
+        if (!localStorage.getItem(LS.SW_CLEANUP)) {
           const oldRegs = await navigator.serviceWorker.getRegistrations();
-          for (const r of oldRegs) { if (r.scope.includes('/static/') || r.scope.includes(window.__STATIC_PREFIX__ + '/')) await r.unregister(); }
-          localStorage.setItem('mw_sw_cleanup_done', '1');
+          for (const r of oldRegs) { if (r.scope.includes('/static/') || r.scope.includes(BOOT.static_prefix + '/')) await r.unregister(); }
+          localStorage.setItem(LS.SW_CLEANUP, '1');
         }
         try { sub = await reg.pushManager.getSubscription(); } catch (e) { logError(logTag('Push', '←', 'Error', 'GetSubscription'), e); }
         logDebug(logTag('Push', '←', 'GetSub', sub ? `found ${sub.endpoint.slice(0, 40)}…` : 'null (no subscription)'));
@@ -1130,7 +1134,7 @@ export async function initPush() {
   }
 
   if (!sub) {
-    const savedLocal = localStorage.getItem('mw_notif_local');
+    const savedLocal = localStorage.getItem(LS.NOTIF_LOCAL);
     logDebug(logTag('Push', '←', 'NoSub', `local=${savedLocal} perm=${Notification.permission} optOut=${optOut}`));
     if (savedLocal === '1' && Notification.permission === 'granted') {
       state._notifyLocal = true;
@@ -1144,7 +1148,7 @@ export async function initPush() {
         const saveResRaw = await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...sub.toJSON(), client_id: _getClientId(), prefs: buildNotifPrefs() }) });
         if (saveResRaw.ok) {
           window._pushSub = sub;
-          localStorage.removeItem('mw_push_opt_out');
+          localStorage.removeItem(LS.PUSH_OPT_OUT);
           setLocal(false);
           syncNotifSettingsUI();
           _syncPushPrefs();
@@ -1169,7 +1173,7 @@ export async function initPush() {
       if (perm !== 'granted') return false;
     } catch (e) { logError(logTag('Push', '←', 'Error', 'Permission'), e); return false; }
     state._pushExpired = false;
-    if (sub) { localStorage.removeItem('mw_push_opt_out'); setLocal(false); syncNotifSettingsUI(); _syncPushPrefs(); return true; }
+    if (sub) { localStorage.removeItem(LS.PUSH_OPT_OUT); setLocal(false); syncNotifSettingsUI(); _syncPushPrefs(); return true; }
     if (canPush && reg && vapidKey) {
       try {
         sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKey });
@@ -1183,7 +1187,7 @@ export async function initPush() {
           state._pushExpired = false;
           setLocal(false);
           window._pushSub = sub;
-          localStorage.removeItem('mw_push_opt_out');
+          localStorage.removeItem(LS.PUSH_OPT_OUT);
           syncNotifSettingsUI();
           return true;
         }
@@ -1195,7 +1199,7 @@ export async function initPush() {
   };
   window._disablePush = async () => {
     logInfo(logTag('Push', '→', 'Disable', `hasSub=${!!sub} hasPushSub=${!!window._pushSub}`));
-    localStorage.setItem('mw_push_opt_out', '1');
+    localStorage.setItem(LS.PUSH_OPT_OUT, '1');
     if (!sub && !window._pushSub) {
       setLocal(false);
       syncNotifSettingsUI();

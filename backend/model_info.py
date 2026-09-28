@@ -45,7 +45,6 @@ _HF_ORG_PREFIXES = (
 _hf_canonical_cache: dict[str, dict] = {}
 _hf_prefix_hint: dict[str, str] = {}
 
-_FETCH_CONCURRENCY = 6
 
 
 def _fmt_params(n: int) -> str:
@@ -555,9 +554,9 @@ def _detect_provider_tag(api_url: str) -> str:
     return ""
 
 
-async def _fetch_list_endpoint(client, url: str, headers: dict, timeout: float) -> list[dict]:
+async def _fetch_list_endpoint(client, url: str, headers: dict) -> list[dict]:
     try:
-        resp = await client.get(url, headers=headers, timeout=timeout)
+        resp = await client.get(url, headers=headers, timeout=st.fetch_timeout())
         if resp.status_code != 200:
             return []
         data = resp.json()
@@ -597,7 +596,6 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
     root_url = base_url.rsplit("/v1", 1)[0] if "/v1" in base_url else base_url
     headers = _build_headers(api_key, provider_cfg.get("headers"))
     client = st.get_http_client()
-    timeout = st.c.http_connect_timeout
 
     urls_to_try = []
     if custom_models_url:
@@ -619,7 +617,7 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
     seen_ids: set[str] = set()
 
     for url in urls_to_try:
-        models_list = await _fetch_list_endpoint(client, url, headers, timeout)
+        models_list = await _fetch_list_endpoint(client, url, headers)
         for m in models_list:
             model_id = _model_id_from_obj(m)
             if not model_id or model_id in seen_ids:
@@ -662,7 +660,7 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
             if model_id not in seen_ids:
                 continue
             try:
-                resp = await client.post(ollama_show_url, headers=headers, timeout=10,
+                resp = await client.post(ollama_show_url, headers=headers, timeout=st.fetch_timeout(),
                                          json={"model": model_id, "verbose": True})
                 if resp.status_code == 200:
                     show_data = resp.json()
@@ -677,8 +675,7 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
             except Exception as e:
                 log_error(f"Model info: Ollama show endpoint failed for {provider_name}/{model_id}", e)
 
-    await _fetch_per_model_details(client, base_url, headers, timeout,
-                                    provider_name, result)
+    await _fetch_per_model_details(client, base_url, headers, provider_name, result)
 
     # Fallback: try each model's own api_url + /models. Some providers expose
     # only per-model sub-path endpoints, so the base /v1/models is inaccessible.
@@ -693,7 +690,7 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
             continue  # no per-model URL to try
         model_base = model_api_url.rstrip('/')
         models_url = f'{model_base}/models'
-        fetched = await _fetch_list_endpoint(client, models_url, headers, timeout)
+        fetched = await _fetch_list_endpoint(client, models_url, headers)
         if not fetched:
             continue
         # Match by ID, or accept a single-model listing (sub-path endpoints
@@ -717,8 +714,7 @@ async def fetch_provider_models(provider_name: str, provider_cfg: dict) -> dict[
     return result
 
 
-async def _fetch_per_model_details(client, base_url: str, headers: dict,
-                                    timeout: float, provider_name: str,
+async def _fetch_per_model_details(client, base_url: str, headers: dict, provider_name: str,
                                     result: dict[str, dict]) -> None:
     registered_ids = set()
     for entry in st.model_registry:
@@ -728,7 +724,7 @@ async def _fetch_per_model_details(client, base_url: str, headers: dict,
     if not registered_ids:
         return
 
-    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    sem = asyncio.Semaphore(st.c.model_info_fetch_concurrency)
 
     async def _fetch_one(model_id):
         existing = result.get(model_id)
@@ -739,7 +735,7 @@ async def _fetch_per_model_details(client, base_url: str, headers: dict,
         try:
             async with sem:
                 resp = await client.get(f"{base_url}/models/{model_id}",
-                                         headers=headers, timeout=10)
+                                         headers=headers, timeout=st.fetch_timeout())
             if resp.status_code != 200:
                 return
             data = resp.json()
@@ -771,7 +767,7 @@ async def _fetch_model_detail(provider_cfg: dict, model_id: str) -> dict | None:
 
     try:
         client = st.get_http_client()
-        resp = await client.post(url, headers=headers, timeout=10,
+        resp = await client.post(url, headers=headers, timeout=st.fetch_timeout(),
                                  json={"model": model_id})
         if resp.status_code != 200:
             return None
@@ -954,7 +950,7 @@ async def _fetch_hf_model(model_id: str) -> dict | None:
     url = _HF_MODEL_URL.format(model_id=model_id)
     try:
         client = st.get_http_client()
-        resp = await client.get(url, timeout=10, headers={"Accept": "application/json"}, follow_redirects=True)
+        resp = await client.get(url, timeout=st.fetch_timeout(), headers={"Accept": "application/json"}, follow_redirects=True)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -1013,7 +1009,7 @@ async def _fetch_hf_model(model_id: str) -> dict | None:
             try:
                 resp = await client.get(
                     f"https://huggingface.co/{model_id}/raw/main/config.json",
-                    timeout=10, follow_redirects=True)
+                    timeout=st.fetch_timeout(), follow_redirects=True)
                 if resp.status_code != 200:
                     return None
                 cfg = resp.json()
@@ -1028,7 +1024,7 @@ async def _fetch_hf_model(model_id: str) -> dict | None:
             try:
                 resp = await client.get(
                     f"https://huggingface.co/{model_id}/raw/main/tokenizer_config.json",
-                    timeout=10, follow_redirects=True)
+                    timeout=st.fetch_timeout(), follow_redirects=True)
                 if resp.status_code != 200:
                     return None
                 tok_cfg = resp.json()
@@ -1041,7 +1037,7 @@ async def _fetch_hf_model(model_id: str) -> dict | None:
             try:
                 resp = await client.get(
                     _HF_README_URL.format(model_id=model_id),
-                    timeout=10, follow_redirects=True)
+                    timeout=st.fetch_timeout(), follow_redirects=True)
                 if resp.status_code != 200:
                     return None
                 return _extract_readme_description(resp.text)
@@ -1103,7 +1099,7 @@ async def _search_hf_models(model_id: str) -> str | None:
     try:
         client = st.get_http_client()
         params = {"search": search_name, "sort": "downloads", "direction": "-1", "limit": "10"}
-        resp = await client.get(_HF_SEARCH_URL, params=params, timeout=10,
+        resp = await client.get(_HF_SEARCH_URL, params=params, timeout=st.fetch_timeout(),
                                 headers={"Accept": "application/json"})
         if resp.status_code != 200:
             return None
@@ -1214,7 +1210,7 @@ async def _enrich_hf(entries: list[dict], fields: frozenset) -> int:
     count of entries that received new data.
     """
     import backend.db as db
-    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    sem = asyncio.Semaphore(st.c.model_info_fetch_concurrency)
 
     async def _fetch_one(entry):
         cached = st.model_info_cache.get(entry["id"], {})
@@ -1397,7 +1393,7 @@ async def fetch_model_info_for_keys(model_keys: list[str]) -> int:
             providers_to_fetch.append((provider_name, provider_cfg, keys_needing_fetch))
 
     if providers_to_fetch:
-        sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+        sem = asyncio.Semaphore(st.c.model_info_fetch_concurrency)
 
         async def _limited_fetch(name, provider_cfg):
             async with sem:
@@ -1452,7 +1448,7 @@ async def fetch_all_model_info() -> int:
     providers = st.models_cfg.get("providers", [])
     total_updated = 0
 
-    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    sem = asyncio.Semaphore(st.c.model_info_fetch_concurrency)
 
     async def _limited_fetch(name, provider):
         async with sem:

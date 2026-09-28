@@ -1,7 +1,8 @@
 // Connection status and reconnect policy (frontend/js/conn.js).
 // Catches finding F5: an accepted-then-closed socket counted as connected (backoff reset, so a
 // retry every 3s forever), server-sent closes counted as HTTP failures (a false "Server unreachable"),
-// and one close code stood for both "never" and "later".
+// and one close code stood for both "never" and "later". F25: a socket that was accepted but never
+// sent its hello counted as nothing at all, so the page stayed 'connecting' on it forever.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONN_STATES, connStatus, wsCloseKind, wsReconnectPlan } from '../../frontend/js/conn.js';
@@ -16,8 +17,8 @@ const CONN = {
 const CODES = CONN.close_codes;
 const ABNORMAL = 1006;
 
-const kind = (code, { wasClean = true, hello = false, restarting = false } = {}) =>
-  wsCloseKind({ code, wasClean, hello, restarting }, CODES);
+const kind = (code, { wasClean = true, hello = false, restarting = false, helloTimedOut = false } = {}) =>
+  wsCloseKind({ code, wasClean, hello, restarting, helloTimedOut }, CODES);
 
 test('only a socket that never reached the server is a failure', () => {
   assert.equal(kind(ABNORMAL, { wasClean: false }), 'failed');
@@ -25,6 +26,13 @@ test('only a socket that never reached the server is a failure', () => {
   assert.equal(kind(CODES.stale, { hello: true }), 'lost');
   assert.equal(kind(CODES.internal, { hello: true }), 'lost');
   assert.equal(kind(CODES.too_big, { hello: true }), 'lost');
+});
+
+test('a socket the page closed because no hello came is a failure, clean close or not (F25)', () => {
+  assert.equal(kind(CODES.stale, { helloTimedOut: true }), 'failed');
+  assert.equal(kind(ABNORMAL, { wasClean: false, helloTimedOut: true }), 'failed');
+  const plan = wsReconnectPlan(kind(CODES.stale, { helloTimedOut: true }), 2000, false, CONN);
+  assert.deepEqual([plan.status, plan.nextBackoffMs], ['disconnected', 4000], 'it backs off like any failure');
 });
 
 test('server-sent closes are classified by code, never as failures', () => {

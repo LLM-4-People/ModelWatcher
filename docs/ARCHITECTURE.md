@@ -223,8 +223,10 @@ state.js ← utils.js ─── format.js
 - Named exports only - no default exports.
 - Mutable shared state via exported `const` object (`state`); primitives use setter functions (`setChartReady()`).
 - `prefs.js` breaks a near-circular dependency between `notifications.js` and `ws.js`.
-- `conn.js` (imports `state.js` only) is the one writer of the header connection dot and the "Server unreachable" banner. `ws.js` reports the socket state and `api.js` the backend-down flag; `conn.js` derives what to show. It also holds the pure close-classification and reconnect-pacing functions, whose timings, close codes and paths come from the server (`window.__MW_CONN__`, refreshed by every WebSocket `hello`).
-- `utils.js`, `state.js` and `conn.js` touch no DOM at import, so `node --test` loads them directly (`tests/js/`).
+- `conn.js` (imports `state.js` only) is the one writer of the header connection dot and the "Server unreachable" banner. `ws.js` reports the socket state and `api.js` the backend-down flag; `conn.js` derives what to show. It also holds the pure close-classification and reconnect-pacing functions, whose timings, close codes and paths come from the server (`window.__MW_BOOT__.conn`, refreshed by every WebSocket `hello`).
+- The page bootstrap `window.__MW_BOOT__` (built by `routes.page_bootstrap()`) is the one object the server injects: static prefix, app name, log level, connection policy, storage keys and prefix (`state.py` `STORAGE_KEYS`), theme names, the model key separator and the `ui` settings. `app.js` shows the `unconfigured` connection state and stops when it is missing; no module reads it at import beyond `state.js`.
+- `ranges.js` holds the modal time-range rules (DOM-free): a keyed range stores its key only and derives its window each time.
+- `utils.js`, `state.js`, `conn.js`, `format.js` and `ranges.js` touch no DOM at import, so `node --test` loads them directly (`tests/js/`).
 - `modal-loader.js` is a lazy-loading proxy - imports `modal.js` dynamically on first call.
 
 ## Single-source-of-truth principle
@@ -232,7 +234,7 @@ state.js ← utils.js ─── format.js
 ModelWatcher enforces a strict single-source-of-truth discipline:
 
 - **Config is the sole source of truth** - The `c` namespace in `state.py` starts empty (no defaults). `reload_config()` populates it from YAML. The codebase has no `getattr(c, "field", default)` patterns - a regression test (`test_config_no_defaults.py`) enforces this. If config is missing or invalid, the app fails fast.
-- **Labels owned by `state.py`** - Metric labels and notification event labels live in `state.py` and are exposed via `/api/config`. The frontend reads them from the API response, never hardcoding its own. A regression test (`test_ssoT_labels.py`) enforces that the frontend does not define its own metric/event labels.
+- **Labels owned by `state.py`** - Metric, status, chart view, capability, test type and notification event labels live in `state.py` and are exposed via `/api/config`. The frontend reads them from the API response, never hardcoding its own. `test_ssoT_labels.py` pins the tables and `test_frontend_rules.py` keeps copies out of the frontend.
 - **Tier resolution is shared** - `tier_idx()` in `stats.py` is the single tier resolution function, used by both `find_critical_metrics()` (Critical→Degraded detection) and notification TPS/TTFT degradation detection.
 - **One notification filter function** - `should_notify()` in `notifications.py` is the single source of truth for all delivery channels (push, WS broadcast, history).
 - **Per-file content-hash cache busting** - `?v=` params on asset URLs use per-file SHA1 hashes, so changing one file only invalidates that file's browser cache.
@@ -298,4 +300,4 @@ ModelWatcher is an installable progressive web app:
 - **Service worker** (`frontend/sw.js`): push-only, no fetch handler. Never caches page content, so stale content is impossible. On activate, deletes old caches, claims all clients, and force-reloads all controlled windows.
 - **Three-layer update detection**: (1) browser auto-checks SW on navigation, (2) `controllerchange` listener reloads page when new SW takes control, (3) deploy-version polling (every 60s) triggers reload when `/api/deploy-version` changes.
 - **Push notifications**: Service worker receives push events via VAPID. Push subscriptions stored in SQLite `push_subscriptions` table. Requires HTTPS (or `http://localhost` for local dev). PWA installation may be required for background push (browser-dependent).
-- **Manifest** (`frontend/manifest.json`): PWA metadata (name, icons, theme color, display mode). `__STATIC_PREFIX__` and `__APP_NAME__` placeholders replaced at serve time.
+- **Manifest** (`frontend/manifest.json`): PWA metadata (name, icons, theme color, display mode). `__STATIC_PREFIX__`, `__APP_NAME__` and `__THEME_COLOR__` placeholders replaced at serve time; the theme colour is the dark `--color-base` from `frontend/input.css`, the one home of every palette value.

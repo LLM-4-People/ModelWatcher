@@ -877,180 +877,26 @@ def query_time_range(model_key: str, test_type: str, since: float,
         return None
 
 
-def query_bucketed_history(model_key: str, since: float, bucket_width: float,
-                            test_type: str = "benchmark",
-                            detail: str = "card",
-                            view: str = "speed",
-                            until: float | None = None) -> list[dict]:
-    """SQL-based bucketed aggregation for ranges exceeding recent_history.
+# Columns chart buckets aggregate (stats.bucket_rows); the rest of a result row is not needed there
+_BUCKET_COLS = ("ts_epoch", "test_type", "available", "degraded", "tps", "ttft_ms", "raw_p99_itl_ms",
+                "chunk_token_ratio", "consistency_score", "speed_score")
 
-    Uses MIN/MAX as approximations for P10/P90 percentile bands (accurate for
-    buckets with few data points, which is the typical case in chart buckets).
-    detail: "card" (flat metrics) or "modal" (nested avg/p10/p90).
-    view: "speed", "consistency", "scores", or "health" - determines which
-          metrics to SELECT in the card path.
-    until: optional upper bound on ts_epoch.
-    Returns list of bucket dicts ordered by time ASC.
-    """
-    if bucket_width <= 0:
-        return []
+
+def query_bucket_rows(model_key: str, test_type: str, since: float, until: float | None = None) -> list[dict]:
+    """A model's final results of one test type since `since` (and up to `until`), oldest first,
+    with the columns chart buckets aggregate. Retry attempts are left out: only the final attempt
+    of a test counts. The rows are bucketed in Python with the same functions as recent_history
+    (stats.bucket_rows), so ranges served from the database and from memory show the same
+    statistics (finding F64: SQL aggregation labelled MIN/MAX as P10/P90)."""
     until_clause = "AND ts_epoch <= ?" if until else ""
     until_args: tuple = (until,) if until else ()
     with _ReadConn() as conn:
-        if detail == "card":
-            base_cols = """
-                FLOOR(ts_epoch / ?) * ? AS bucket_ts,
-                AVG(ts_epoch) AS ts,
-                SUM(CASE WHEN available THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS available_rate,
-                SUM(CASE WHEN degraded THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS degraded_rate,
-                COUNT(*) AS count"""
-            view_cols = {
-                "speed": ", AVG(tps) AS tps, AVG(ttft_ms) AS ttft_ms, MIN(tps) AS tps_p10, MAX(tps) AS tps_p90, MIN(ttft_ms) AS ttft_ms_p10, MAX(ttft_ms) AS ttft_ms_p90",
-                "consistency": ", AVG(raw_p99_itl_ms) AS raw_p99_itl_ms, AVG(chunk_token_ratio) AS chunk_token_ratio, MIN(raw_p99_itl_ms) AS raw_p99_itl_ms_p10, MAX(raw_p99_itl_ms) AS raw_p99_itl_ms_p90, MIN(chunk_token_ratio) AS chunk_token_ratio_p10, MAX(chunk_token_ratio) AS chunk_token_ratio_p90",
-                "scores": ", AVG(consistency_score) AS consistency_score, AVG(speed_score) AS speed_score",
-                "health": ", AVG(ttft_ms) AS ttft_ms, MIN(ttft_ms) AS ttft_ms_p10, MAX(ttft_ms) AS ttft_ms_p90",
-            }
-            extra = view_cols.get(view, view_cols["speed"])
-            rows = conn.execute(f"""
-                SELECT
-                    {base_cols}
-                    {extra}
-                FROM test_results
-                WHERE model_key = ? AND ts_epoch >= ? AND test_type = ? AND retry_attempt IS NULL
-                    {until_clause}
-                GROUP BY bucket_ts
-                ORDER BY bucket_ts ASC
-            """, (bucket_width, bucket_width, model_key, since, test_type, *until_args)).fetchall()
-            result = []
-            for r in rows:
-                b = {"bucket_ts": r["bucket_ts"], "ts": r["ts"],
-                     "available_rate": r["available_rate"],
-                     "degraded_rate": r["degraded_rate"],
-                     "count": r["count"]}
-                for col in (view_cols.get(view, view_cols["speed"])
-                           .lstrip(", ").split(", ")):
-                    alias = col.split(" AS ")[-1].strip()
-                    b[alias] = r[alias]
-                # For single-point buckets, p10/p90 should equal the value
-                if r["count"] == 1:
-                    for field_key in ["tps", "ttft_ms", "raw_p99_itl_ms", "chunk_token_ratio"]:
-                        if field_key in b and b[field_key] is not None:
-                            p10_key = field_key + "_p10"
-                            p90_key = field_key + "_p90"
-                            if p10_key not in b or b[p10_key] is None:
-                                b[p10_key] = b[field_key]
-                            if p90_key not in b or b[p90_key] is None:
-                                b[p90_key] = b[field_key]
-                result.append(b)
-            return result
-        else:  # modal
-            rows = conn.execute(f"""
-                SELECT
-                    FLOOR(ts_epoch / ?) * ? AS bucket_ts,
-                    AVG(ts_epoch) AS ts,
-                    AVG(tps) AS tps_avg, MIN(tps) AS tps_p10, MAX(tps) AS tps_p90,
-                    AVG(ttft_ms) AS ttft_ms_avg, MIN(ttft_ms) AS ttft_ms_p10, MAX(ttft_ms) AS ttft_ms_p90,
-                    AVG(raw_p99_itl_ms) AS raw_p99_itl_ms_avg, MIN(raw_p99_itl_ms) AS raw_p99_itl_ms_p10, MAX(raw_p99_itl_ms) AS raw_p99_itl_ms_p90,
-                    AVG(chunk_token_ratio) AS chunk_token_ratio_avg,
-                    MIN(chunk_token_ratio) AS chunk_token_ratio_p10,
-                    MAX(chunk_token_ratio) AS chunk_token_ratio_p90,
-                    AVG(stall_count) AS stall_count_avg,
-                    MIN(stall_count) AS stall_count_p10,
-                    MAX(stall_count) AS stall_count_p90,
-                    AVG(effective_itl_tail_ratio) AS effective_itl_tail_ratio_avg,
-                    MIN(effective_itl_tail_ratio) AS effective_itl_tail_ratio_p10,
-                    MAX(effective_itl_tail_ratio) AS effective_itl_tail_ratio_p90,
-                    AVG(consistency_score) AS consistency_score_avg,
-                    AVG(speed_score) AS speed_score_avg,
-                    SUM(CASE WHEN available THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS available_rate,
-                    SUM(CASE WHEN degraded THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS degraded_rate,
-                    COUNT(*) AS count
-                FROM test_results
-                WHERE model_key = ? AND ts_epoch >= ? AND test_type = ? AND retry_attempt IS NULL
-                    {until_clause}
-                GROUP BY bucket_ts
-                ORDER BY bucket_ts ASC
-            """, (bucket_width, bucket_width, model_key, since, test_type, *until_args)).fetchall()
-            result = []
-            for r in rows:
-                bucket = {
-                    "bucket_ts": r["bucket_ts"],
-                    "ts": r["ts"],
-                    "tps": {"avg": r["tps_avg"], "p10": r["tps_p10"], "p90": r["tps_p90"]} if r["tps_avg"] is not None else None,
-                    "ttft_ms": {"avg": r["ttft_ms_avg"], "p10": r["ttft_ms_p10"], "p90": r["ttft_ms_p90"]} if r["ttft_ms_avg"] is not None else None,
-                    "raw_p99_itl_ms": {"avg": r["raw_p99_itl_ms_avg"], "p10": r["raw_p99_itl_ms_p10"], "p90": r["raw_p99_itl_ms_p90"]} if r["raw_p99_itl_ms_avg"] is not None else None,
-                    "chunk_token_ratio": {"avg": r["chunk_token_ratio_avg"], "p10": r["chunk_token_ratio_p10"], "p90": r["chunk_token_ratio_p90"]} if r["chunk_token_ratio_avg"] is not None else None,
-                    "stall_count": {"avg": r["stall_count_avg"], "p10": r["stall_count_p10"], "p90": r["stall_count_p90"]} if r["stall_count_avg"] is not None else None,
-                    "effective_itl_tail_ratio": {"avg": r["effective_itl_tail_ratio_avg"], "p10": r["effective_itl_tail_ratio_p10"], "p90": r["effective_itl_tail_ratio_p90"]} if r["effective_itl_tail_ratio_avg"] is not None else None,
-                    "consistency_score": {"avg": round(r["consistency_score_avg"], 1)} if r["consistency_score_avg"] is not None else None,
-                    "speed_score": {"avg": round(r["speed_score_avg"], 1)} if r["speed_score_avg"] is not None else None,
-                    "available_rate": r["available_rate"],
-                    "degraded_rate": r["degraded_rate"],
-                    "count": r["count"],
-                }
-                result.append(bucket)
-            return result
-
-
-def query_bucketed_health(model_key: str, since: float, bucket_width: float,
-                            flat: bool = False, until: float | None = None) -> list[dict]:
-    """SQL-based bucketed aggregation for health check results.
-
-    Uses MIN/MAX as approximations for P10/P90 percentile bands (accurate for
-    buckets with few data points, which is typical for health checks).
-    flat=True returns scalar ttft_ms with p10/p90 fields.
-    flat=False returns nested {avg, p10, p90} (for modal charts).
-    until: optional upper bound on ts_epoch (reduces query for large ranges).
-    """
-    if bucket_width <= 0:
-        return []
-    until_clause = "AND ts_epoch <= ?" if until else ""
-    until_args: tuple = (until,) if until else ()
-    with _ReadConn() as conn:
-        if flat:
-            rows = conn.execute(f"""
-                SELECT
-                    FLOOR(ts_epoch / ?) * ? AS bucket_ts,
-                    AVG(ts_epoch) AS ts,
-                    AVG(ttft_ms) AS ttft_ms,
-                    MIN(ttft_ms) AS ttft_ms_p10,
-                    MAX(ttft_ms) AS ttft_ms_p90,
-                    SUM(CASE WHEN available THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS available_rate,
-                    COUNT(*) AS count
-                FROM test_results
-                WHERE model_key = ? AND ts_epoch >= ? AND test_type = 'health' AND retry_attempt IS NULL
-                    {until_clause}
-                GROUP BY bucket_ts
-                ORDER BY bucket_ts ASC
-            """, (bucket_width, bucket_width, model_key, since, *until_args)).fetchall()
-            return [
-                {"bucket_ts": r["bucket_ts"], "ts": r["ts"], "ttft_ms": r["ttft_ms"],
-                 "ttft_ms_p10": r["ttft_ms_p10"], "ttft_ms_p90": r["ttft_ms_p90"],
-                 "available_rate": r["available_rate"], "count": r["count"]}
-                for r in rows
-            ]
-        rows = conn.execute(f"""
-            SELECT
-                FLOOR(ts_epoch / ?) * ? AS bucket_ts,
-                AVG(ts_epoch) AS ts,
-                AVG(ttft_ms) AS ttft_ms_avg,
-                MIN(ttft_ms) AS ttft_ms_p10,
-                MAX(ttft_ms) AS ttft_ms_p90,
-                SUM(CASE WHEN available THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS available_rate,
-                COUNT(*) AS count
-            FROM test_results
-            WHERE model_key = ? AND ts_epoch >= ? AND test_type = 'health' AND retry_attempt IS NULL
-                {until_clause}
-            GROUP BY bucket_ts
-            ORDER BY bucket_ts ASC
-        """, (bucket_width, bucket_width, model_key, since, *until_args)).fetchall()
-        return [
-            {"bucket_ts": r["bucket_ts"], "ts": r["ts"],
-             "ttft_ms": {"avg": r["ttft_ms_avg"], "p10": r["ttft_ms_p10"], "p90": r["ttft_ms_p90"]} if r["ttft_ms_avg"] is not None else None,
-             "available_rate": r["available_rate"],
-             "count": r["count"]}
-            for r in rows
-        ]
+        rows = conn.execute(
+            f"SELECT {', '.join(_BUCKET_COLS)} FROM test_results "
+            f"WHERE model_key = ? AND ts_epoch >= ? AND test_type = ? AND retry_attempt IS NULL {until_clause} "
+            f"ORDER BY ts_epoch ASC",
+            (model_key, since, test_type, *until_args)).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
 
 def query_markers_bucketed(model_key: str, test_type: str, since: float,
@@ -1543,10 +1389,12 @@ def _derive_status_from_result(
 ) -> tuple[str, str | None]:
     """Derive (new_status, degraded_source) from a test result.
 
-    Health checks cannot clear benchmark-owned degradation - a clean health success
-    preserves a benchmark-owned degraded state. Retry records always set degraded
-    status, except a health retry preserves an existing benchmark-owned source so a
-    later health success doesn't incorrectly clear benchmark degradation.
+    Health checks cannot clear a benchmark-owned state - a clean health success
+    preserves a benchmark-owned degraded state and turns a failed benchmark into
+    benchmark-owned degradation, which lasts until the next benchmark (finding F59: a health
+    success used to put a model whose last benchmark failed back to a plain "online").
+    Retry records always set degraded status, except a health retry preserves an existing
+    benchmark-owned source so a later health success doesn't clear benchmark degradation.
     """
     if retry_attempt is not None:
         if old_degraded_source == TEST_BENCHMARK and test_type == TEST_HEALTH:
@@ -1568,7 +1416,7 @@ def _derive_status_from_result(
             return "error", None
     if available:
         return ("degraded", test_type) if degraded else ("online", None)
-    return "error", None
+    return "error", test_type
 
 
 def _status_change_event(old_status: str, new_status: str) -> str | None:

@@ -1,8 +1,10 @@
 // Tooltip system: hover (desktop), long-press (touch), and focus support.
 // Single shared #help-tip div with content from three resolution paths:
-// data-tip-id (registered HTML), data-tip (HELP dict + tier scale), or raw text.
-import { HELP, isTouchDevice, logError, logTag } from './utils.js';
-import { tierScaleHTML } from './format.js';
+// data-tip-id (registered HTML), data-tip (Help text + tier scale), or raw text.
+// A tip describes a control: using the control, opening any layer or a tap elsewhere hides it,
+// so it never covers what was just opened (findings F52, F53).
+import { isTouchDevice, logError, logTag, onLayerOpen } from './utils.js';
+import { tierScaleHTML, helpText, isHelpKey } from './format.js';
 
 const _tipHTML = {};
 
@@ -35,8 +37,7 @@ function _resolveContent(el) {
   if (tipId && _tipHTML[tipId]) return _tipHTML[tipId];
   const key = el.dataset.tip;
   if (!key) return '';
-  const raw = HELP[key] || key;
-  return raw + tierScaleHTML(key);
+  return isHelpKey(key) ? helpText(key) + tierScaleHTML(key) : key;
 }
 
 function _setContent(html) {
@@ -148,20 +149,19 @@ export function initTooltips() {
       _longPressTarget = null;
     }, { passive: true });
 
+    // Not passive: a long-press that showed a tip cancels the click that would follow it, so a
+    // tip target inside a card does not also open the modal (F53)
     document.addEventListener('touchend', e => {
       clearTimeout(_longPressTimer);
       _longPressTimer = 0;
       if (_longPressFired) {
         _longPressFired = false;
         _longPressTarget = null;
+        e.preventDefault();
         return;
       }
-      const el = _longPressTarget;
       _longPressTarget = null;
-      if (_touchMoved) return;
-      if (!el) return;
-      if (_current === el) { _hide(); }
-    }, { passive: true });
+    });
 
     document.addEventListener('touchcancel', () => {
       clearTimeout(_longPressTimer);
@@ -187,23 +187,28 @@ export function initTooltips() {
   document.addEventListener('focusin', e => showIfNotTouch(findTipTarget(e.target)));
   document.addEventListener('focusout', e => hideIfNotPinned(e.relatedTarget));
 
+  // A control's tip describes what it does: using it hides the tip
+  const isControl = el => !!el.closest('button, a, [role="button"], [role="switch"], [role="tab"], input, select, summary');
+
   document.addEventListener('click', e => {
-    if (touch && _shownByTap) return;
+    // On touch, tips come from a long-press only, and any tap afterwards dismisses them
+    if (touch) { if (_current) _hide(); return; }
     const el = findTipTarget(e.target);
     if (el) {
-      if (touch) return;
       if (el.dataset.copyTip !== undefined && _current === el) {
         copyTipText(el);
         e.preventDefault();
         e.stopPropagation();
         return;
       }
-      if (_current !== el) _show(el, false);
+      if (_current === el || isControl(el)) _hide();
+      else _show(el, false);
     } else if (_current) {
       _hide();
     }
   }, true);
 
+  onLayerOpen(hideTip);
   document.addEventListener('touchmove', hideTip, { passive: true });
   document.addEventListener('scroll', hideTip, true);
 

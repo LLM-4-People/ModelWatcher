@@ -6,7 +6,13 @@
 import { state } from './state.js';
 
 // Glossary order; each state has a `ws_<state>` HELP tip and a #ws-status[data-state] CSS rule
-export const CONN_STATES = ['connecting', 'connected', 'restarting', 'busy', 'rejected', 'disconnected', 'down'];
+// 'unconfigured': the page came without its bootstrap (app.js stops at start, finding F32)
+export const CONN_STATES = ['connecting', 'connected', 'restarting', 'busy', 'rejected', 'disconnected', 'down', 'unconfigured'];
+
+const _listeners = [];
+
+// Called after every change of the shown connection state (app.js keeps the main area's load state)
+export function onConnChange(fn) { _listeners.push(fn); }
 
 export function connStatus(wsStatus, backendDown) {
   return backendDown ? 'down' : wsStatus;
@@ -23,6 +29,7 @@ export function renderConnStatus() {
   // The hidden attribute works without the stylesheet; a CSS class left the banner showing (F5)
   const banner = document.getElementById('backend-down-banner');
   if (banner) banner.hidden = !state._backendDown;
+  for (const fn of _listeners) fn(status);
 }
 
 export function setWSStatus(status) {
@@ -35,13 +42,14 @@ export function setBackendDown(down) {
   renderConnStatus();
 }
 
-// What a close means. Only a socket that never got its hello and did not close cleanly
-// failed to reach the server; every server-sent close proves the server is up.
-export function wsCloseKind({ code, wasClean, hello, restarting }, codes) {
+// What a close means. Only a socket that never got its hello and did not close cleanly, or that
+// the page closed because no hello came (F25), failed to reach the server; every server-sent
+// close proves the server is up.
+export function wsCloseKind({ code, wasClean, hello, restarting, helloTimedOut }, codes) {
   if (restarting || code === codes.restart) return 'restart';
   if (code === codes.policy) return 'rejected';
   if (code === codes.try_again) return 'busy';
-  if (!hello && !wasClean) return 'failed';
+  if (helloTimedOut || (!hello && !wasClean)) return 'failed';
   return 'lost';
 }
 

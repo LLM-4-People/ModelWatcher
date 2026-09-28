@@ -213,6 +213,11 @@ model_info_cache: dict[str, dict] = {}
 _http_client: httpx.AsyncClient | None = None
 
 
+def fetch_timeout() -> httpx.Timeout:
+    """Timeout of the background fetches (provider pages, logos, model info), from config."""
+    return httpx.Timeout(c.fetch_timeout, connect=c.http_connect_timeout)
+
+
 def get_http_client() -> httpx.AsyncClient:
     """Get or create the shared httpx client.
 
@@ -281,10 +286,16 @@ def rate_limited(times: list[float], window_s: float, max_count: int) -> bool:
 # ── Scheduler state ──────────────────────────────────────────────────────────
 
 scheduler_running: bool = False
-last_run_time: float | None = None
-next_run_time: float | None = None
 config_changed: asyncio.Event | None = None
 _wake_event: asyncio.Event | None = None
+
+
+
+def scheduler_state() -> dict:
+    """Whether tests run, for the page (/api/config and the WebSocket hello, finding F90):
+    running, and paused by MW_DISABLE_TESTS."""
+    return {"running": scheduler_running, "paused": TESTS_DISABLED}
+
 
 _scheduler_task = None
 _config_watcher_task = None
@@ -436,6 +447,69 @@ STATUS_VALUES = ("online", "degraded", "error", "unknown")
 TEST_TYPES = (TEST_BENCHMARK, TEST_HEALTH, TEST_AUDIT, TEST_PROBE)
 CHART_VIEWS = ("speed", "consistency", "scores", "health")
 
+# Metrics whose trend the backend computes (stats.compute_trends); metrics.trend_deadbands has one per metric
+TREND_METRICS = (
+    "tps", "ttft_ms", "stall_count", "raw_p99_itl_ms", "effective_itl_tail_ratio", "chunk_token_ratio",
+    "consistency_score", "speed_score", "available", "reliability_score",
+)
+
+# Display name per status: badges, the Status filter and the Help legend all read these (F77)
+STATUS_LABELS = {
+    "online": "Online",
+    "degraded": "Degraded",
+    "error": "Offline",
+    "unknown": "Untested",
+}
+
+# Label of each card and modal chart view (F80); the series inside a view take METRIC_LABELS
+CHART_VIEW_LABELS = {
+    "speed": "TPS + TTFT",
+    "consistency": "P99 ITL (raw) + Batching",
+    "scores": "Scores",
+    "health": "Health TTFT",
+}
+
+# Model capabilities in display order: the card badge, the Specs filter, the modal and the
+# Help text all name them from here (F76). key is the model-info field that flags it.
+CAPABILITIES = (
+    {"key": "thinking", "label": "Thinking", "desc": "chain-of-thought reasoning"},
+    {"key": "supports_vision", "label": "Vision", "desc": "image understanding"},
+    {"key": "supports_tools", "label": "Tools", "desc": "function and tool calling"},
+    {"key": "supports_cache", "label": "Cache", "desc": "prompt caching"},
+    {"key": "supports_structured_output", "label": "JSON", "desc": "structured (JSON) output"},
+)
+
+# Every browser localStorage key the page uses, under one prefix (F19). The page gets them in
+# its bootstrap and the inline theme script in routes.py reads them from here; a key that is no
+# longer listed is removed from the browser on the next load (utils.js pruneStorage).
+STORAGE_PREFIX = "mw_"
+STORAGE_KEYS = {name: STORAGE_PREFIX + suffix for name, suffix in {
+    "CLIENT_ID": "client_id",
+    "COLLAPSED": "collapsed",
+    "THEME": "theme",
+    "FILTERS": "filters",
+    "NOTIF_SETTINGS": "notif_settings",
+    "NOTIF_HISTORY": "notif_history",
+    "NOTIF_READ_IDS": "notif_read_ids",
+    "NOTIF_ENABLED_AT": "notif_enabled_at",
+    "NOTIF_LOCAL": "notif_local",
+    "NOTIF_ENABLED_ONCE": "notif_enabled_once",
+    "SW_CLEANUP": "sw_cleanup_done",
+    "PUSH_OPT_OUT": "push_opt_out",
+    "CARD_VIEW": "card_view",
+    "CHART_VIEW": "chart_view",
+    "CHART_RANGE": "chart_range",
+    "CHART_SINCE": "chart_since",
+    "CHART_UNTIL": "chart_until",
+    "HIST_RANGE": "hist_range",
+    "HIST_SINCE": "hist_since",
+    "HIST_UNTIL": "hist_until",
+    "TABLE_COLS": "table_cols",
+    "ACC_COLLAPSED": "acc_collapsed",
+}.items()}
+# The theme preference values (F56); no stored value means "follow the system setting"
+THEMES = ("light", "dark")
+
 # Display names per test type: `full` where there is room, `short` on phones
 TEST_TYPE_LABELS = {
     TEST_HEALTH: {"full": "Health", "short": "HC"},
@@ -469,8 +543,11 @@ METRIC_LABELS = {
     "network_jitter_ms": "Net jitter", "burst_arrival_pct": "Burst %",
     "chunk_token_cv": "Chunk CV",
     "consistency_score": "Consistency", "speed_score": "Speed",
-    "reliability": "Reliability", "tpot_ms": "TPOT",
+    "reliability": "Reliability", "tpot_ms": "TPOT", "uptime": "Uptime",
 }
+# The same labels where space is short (card tiles, table columns); most need no abbreviation
+METRIC_SHORT_LABELS = {**METRIC_LABELS, "raw_p99_itl_ms": "P99 ITL", "effective_itl_tail_ratio": "Tail (eff.)",
+                       "chunk_token_ratio": "Batch", "network_jitter_ms": "Jitter"}
 
 
 # ── Test concurrency guard ───────────────────────────────────────────────────

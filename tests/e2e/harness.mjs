@@ -100,7 +100,7 @@ export function launchBrowser() {
 
 // The page's own connection policy, as the server injected it
 export function pageConn(page) {
-  return page.evaluate(() => window.__MW_CONN__);
+  return page.evaluate(() => window.__MW_BOOT__.conn);
 }
 
 // Resolve a frontend module with the page's own ?v= URL so the test shares its module instance

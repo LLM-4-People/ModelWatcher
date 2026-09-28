@@ -2,73 +2,77 @@
 // hide/show (preserves chart instances) rather than DOM rebuild. Section
 // visibility is derived from the data model, not DOM presence, so collapsed
 // providers (skeleton placeholders) are handled correctly.
-import { state } from './state.js';
-import { slug, esc, logError, logInfo, logTag, dotHTML, setHTML, setText } from './utils.js';
+import { state, LS } from './state.js';
+import { slug, esc, logError, logInfo, logTag, dotHTML, setHTML, setText, pushLayer, openLayerCount } from './utils.js';
 import { refreshVisibleCharts } from './chart.js';
-import { STATUS_DOT, TIER_TEXT, TIER_BG, SCORE_TIERS } from './format.js';
+import { STATUS_DOT, TIER_TEXT, TIER_BG, statusLabel, scoreTierIdx, tierRangeLabels, fmtContext } from './format.js';
 
 // ── Filter state ──────────────────────────────────────────────────────────
 
 const filter = {
   search: '',             // lowercase search query
-  status: 'all',          // 'all' | 'online' | 'degraded' | 'offline' | 'archived'
-  consistencyRange: 'all', // 'all' | SCORE_TIERS key (e.g. '80', '60', '40', '20', '0')
+  status: 'all',          // 'all' | a status value (backend STATUS_VALUES) | 'archived'
+  consistencyRange: 'all', // 'all' | score tier index as a string ('0' = best tier)
   speedRange: 'all',
   reliabilityRange: 'all',
-  context: 'all',         // 'all' | '200k-1m' | 'gte1m'
-  paramSize: 'all',       // 'all' | 'lt70' | '70-235' | '235-500' | 'gt500'
+  context: 'all',         // 'all' | a CONTEXT_DEFS key
+  paramSize: 'all',       // 'all' | a PARAM_DEFS key
   caps: new Set(),        // empty = no filter; entries are capability keys
 };
 
-const STORAGE_KEY = 'mw_filters';
 const SEARCH_DEBOUNCE_MS = 150;
+const _ALL = { key: 'all', label: 'All' };
+const _ARCHIVED = 'archived';
 
-// Filter definitions - used for both rendering and chip labels
-const STATUS_DEFS = [
-  { key: 'all',      label: 'All',      dot: 'bg-text-faint' },
-  { key: 'online',   label: 'Online',   dot: STATUS_DOT.online },
-  { key: 'degraded', label: 'Degraded', dot: STATUS_DOT.degraded },
-  { key: 'offline',  label: 'Offline',  dot: STATUS_DOT.error },
-  { key: 'archived', label: 'Archived', dot: 'bg-surface-400' },
-];
-// Score range options derived from SCORE_TIERS - exact same boundaries as card colors.
-// Each option is a range [min, max] matching the card's tier system.
-const SCORE_DEFS = [
-  { key: 'all', label: 'All', min: null, max: null, tierKey: null },
-  ...SCORE_TIERS.map((t, i) => {
-    const upper = i > 0 ? SCORE_TIERS[i - 1].min - 1 : 100;
-    const label = t.min === 0 ? `\u2264${upper}%` : `${t.min}\u2013${upper}%`;
-    return { key: String(t.min), label, min: t.min, max: upper, tierKey: t.key };
-  }),
-];
+// Filter options, each defined once: the buttons, the chips and the predicates all read these.
+// Statuses and their labels come from the backend (STATUS_VALUES/STATUS_LABELS, finding F77);
+// Offline matches the error status only, untested models have their own option.
+function statusDefs() {
+  return [
+    { ..._ALL, dot: 'bg-text-faint' },
+    ...state.statusValues.map(s => ({ key: s, label: statusLabel(s), dot: STATUS_DOT[s] })),
+    { key: _ARCHIVED, label: 'Archived', dot: 'bg-surface-400' },
+  ];
+}
+
+// Score ranges are the color_thresholds.scores tiers (finding F81): an option matches exactly the
+// scores the cards colour with that tier
+function scoreDefs() {
+  const tiers = state.colorThresholds.tiers || [];
+  return [_ALL, ...tierRangeLabels('scores').map((label, i) => ({ key: String(i), label, tierKey: tiers[i]?.color }))];
+}
+
 const SCORE_METRICS = [
-  { key: 'consistencyRange', label: 'Consistency', scoreKey: 'consistency', tabKey: 'consistency' },
-  { key: 'speedRange',       label: 'Speed',       scoreKey: 'speed',       tabKey: 'speed' },
-  { key: 'reliabilityRange', label: 'Reliability', scoreKey: 'reliability', tabKey: 'reliability' },
+  { key: 'consistencyRange', metric: 'consistency_score', scoreKey: 'consistency' },
+  { key: 'speedRange',       metric: 'speed_score',       scoreKey: 'speed' },
+  { key: 'reliabilityRange', metric: 'reliability',       scoreKey: 'reliability' },
 ];
+const _scoreMetricLabel = m => state.metricLabels[m.metric] ?? '';
 let _activeScoreTab = 0; // index into SCORE_METRICS
+
+// Spec ranges: [min, max) bounds in one place, labels derived from them (finding F76; the
+// options used to be typed in index.html too, and 1M context matched no option)
+const _range = (min, max, fmt, unit = '') => min == null ? `<${fmt(max)}${unit}` : max == null ? `\u2265${fmt(min)}${unit}` : `${fmt(min)}-${fmt(max)}${unit}`;
 const CONTEXT_DEFS = [
-  { key: 'all',      label: 'All' },
-  { key: '0-64k',    label: '\u226464K' },
-  { key: '64k-262k', label: '64K\u2013262K' },
-  { key: '262k-1m',  label: '262K\u20131M' },
-  { key: 'gte1m',    label: '>1M' },
-];
+  { key: '0-64k', max: 64_000 },
+  { key: '64k-262k', min: 64_000, max: 262_000 },
+  { key: '262k-1m', min: 262_000, max: 1_000_000 },
+  { key: 'gte1m', min: 1_000_000 },
+].map(d => ({ ...d, label: _range(d.min, d.max, fmtContext) }));
 const PARAM_DEFS = [
-  { key: 'all',      label: 'All' },
-  { key: 'lt70',     label: '<70B' },
-  { key: '70-235',   label: '70\u2013235B' },
-  { key: '235-500',  label: '235\u2013500B' },
-  { key: 'gt500',    label: '>500B' },
+  { key: 'lt70', max: 70 },
+  { key: '70-235', min: 70, max: 235 },
+  { key: '235-500', min: 235, max: 500 },
+  { key: 'gt500', min: 500 },
+].map(d => ({ ...d, label: _range(d.min, d.max, String, 'B') }));
+const _inRange = (def, v) => (def.min == null || v >= def.min) && (def.max == null || v < def.max);
+const SPEC_GROUPS = [
+  { key: 'context', container: 'filter-ctx', attr: 'ctx', defs: CONTEXT_DEFS, chip: 'Ctx', clear: 'context' },
+  { key: 'paramSize', container: 'filter-param', attr: 'param', defs: PARAM_DEFS, chip: 'Params', clear: 'paramSize' },
 ];
-// Capability keys match capabilitiesBadge() in dom.js
-const CAP_DEFS = [
-  { key: 'supports_vision',            label: 'Vision' },
-  { key: 'supports_tools',             label: 'Tools' },
-  { key: 'thinking',                   label: 'Reasoning' },
-  { key: 'supports_cache',             label: 'Cache' },
-  { key: 'supports_structured_output', label: 'Structured Output' },
-];
+
+// Capabilities are the backend's list (backend/state.py CAPABILITIES)
+const capDefs = () => state.capabilities;
 
 // ── Search haystacks (precomputed lowercase strings for instant search) ────
 
@@ -99,12 +103,10 @@ function _matchesSearch(entry) {
 
 function _matchesStatus(entry, metrics) {
   if (filter.status === 'all') return true;
-  if (filter.status === 'archived') return !!entry.archived;
+  if (filter.status === _ARCHIVED) return !!entry.archived;
   // Non-archived statuses: exclude archived models
   if (entry.archived) return false;
-  const s = metrics?.status || 'unknown';
-  if (filter.status === 'offline') return s === 'error' || s === 'unknown';
-  return s === filter.status;
+  return (metrics?.status || 'unknown') === filter.status;
 }
 
 function _matchesScore(metrics) {
@@ -112,10 +114,8 @@ function _matchesScore(metrics) {
   for (const m of SCORE_METRICS) {
     const rangeKey = filter[m.key];
     if (rangeKey === 'all') continue;
-    const def = SCORE_DEFS.find(d => d.key === rangeKey);
-    if (!def || def.min == null) continue;
     const v = sc?.[m.scoreKey];
-    if (v == null || v < def.min || v > def.max) return false;
+    if (v == null || String(scoreTierIdx(v)) !== rangeKey) return false;
   }
   return true;
 }
@@ -132,22 +132,14 @@ function _parseParamB(s) {
   return n; // in billions
 }
 
+const _SPEC_VALUE = { context: e => e.context_window, paramSize: e => _parseParamB(e.param_count) };
+
 function _matchesSpecs(entry) {
-  if (filter.context !== 'all') {
-    const ctx = entry.context_window;
-    if (ctx == null) return false;
-    if (filter.context === '0-64k')    { if (ctx >= 64000) return false; }
-    else if (filter.context === '64k-262k') { if (ctx < 64000 || ctx >= 262000) return false; }
-    else if (filter.context === '262k-1m')  { if (ctx < 262000 || ctx >= 1000000) return false; }
-    else if (filter.context === 'gte1m')    { if (ctx <= 1000000) return false; }
-  }
-  if (filter.paramSize !== 'all') {
-    const p = _parseParamB(entry.param_count);
-    if (p == null) return false;
-    if (filter.paramSize === 'lt70')    { if (p >= 70) return false; }
-    if (filter.paramSize === '70-235')  { if (p < 70 || p >= 235) return false; }
-    if (filter.paramSize === '235-500') { if (p < 235 || p >= 500) return false; }
-    if (filter.paramSize === 'gt500')   { if (p < 500) return false; }
+  for (const g of SPEC_GROUPS) {
+    if (filter[g.key] === 'all') continue;
+    const def = g.defs.find(d => d.key === filter[g.key]);
+    const v = _SPEC_VALUE[g.key](entry);
+    if (!def || v == null || !_inRange(def, v)) return false;
   }
   for (const cap of filter.caps) {
     if (!entry[cap]) return false;
@@ -163,6 +155,10 @@ function _entryMatches(entry) {
     && _matchesSpecs(entry);
 }
 
+// Whether a model passes the active filter: provider header counts use it, so they count the
+// cards on screen (finding F69)
+export function entryVisible(entry) { return _entryMatches(entry); }
+
 // ── Public: is any filter active? ─────────────────────────────────────────
 
 export function filterActive() {
@@ -176,12 +172,16 @@ export function filterActive() {
     || filter.caps.size > 0;
 }
 
-// ── Core: apply filter to dOM (CSS hide/show - preserves charts) ──────────
+// ── Core: apply filter to the DOM (CSS hide/show - preserves charts) ─────
 
 // Track which provider sections had cards change from hidden→visible,
 // so we only trigger chart init when filtering actually reveals cards
 // (not on initial render where lazy loading handles it).
 const _newlyVisibleProviders = new Set();
+const _filterListeners = [];
+
+// Called after every apply, with the per-provider match lists (dom.js redraws the header counts)
+export function onFilterApplied(fn) { _filterListeners.push(fn); }
 
 export function applyFilter() {
   const bar = document.getElementById('filter-bar');
@@ -223,14 +223,16 @@ export function applyFilter() {
 
   _updateCount(visible, total);
   _updateChips();
+  _updateEmptyState(visible);
   _updateDisabledOptions();
+  for (const fn of _filterListeners) fn();
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────
 
 function _save() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    localStorage.setItem(LS.FILTERS, JSON.stringify({
       search: filter.search,
       status: filter.status,
       consistencyRange: filter.consistencyRange,
@@ -243,44 +245,52 @@ function _save() {
   } catch (e) { logError(logTag('Filter', 'Err', 'Save'), e); }
 }
 
+// A stored value that no option has any more (a renamed key, a retired status) reads as 'all'
+const _known = (defs, v) => (defs.some(d => d.key === v) ? v : 'all');
+
 function _load() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(LS.FILTERS);
     if (!raw) return;
     const s = JSON.parse(raw);
-    filter.search    = s.search    || '';
-    filter.status    = s.status    || 'all';
-    // Migrate old minConsistency/minSpeed/minReliability (numbers) to range keys
-    if (s.consistencyRange != null) filter.consistencyRange = s.consistencyRange;
-    else if (s.minConsistency > 0) filter.consistencyRange = String(s.minConsistency);
-    if (s.speedRange != null) filter.speedRange = s.speedRange;
-    else if (s.minSpeed > 0) filter.speedRange = String(s.minSpeed);
-    if (s.reliabilityRange != null) filter.reliabilityRange = s.reliabilityRange;
-    else if (s.minReliability > 0) filter.reliabilityRange = String(s.minReliability);
-    // Migrate old contextMin (number) to new context (string key)
-    if (s.context != null) filter.context = s.context;
-    else if (s.contextMin >= 1000000) filter.context = 'gte1m';
-    else if (s.contextMin >= 200000) filter.context = 'all';
-    filter.paramSize = s.paramSize || 'all';
-    filter.caps      = new Set(s.caps || []);
+    filter.search = typeof s.search === 'string' ? s.search : '';
+    filter.status = _known(statusDefs(), s.status);
+    for (const m of SCORE_METRICS) filter[m.key] = _known(scoreDefs(), s[m.key]);
+    for (const g of SPEC_GROUPS) filter[g.key] = _known(g.defs, s[g.key]);
+    const caps = new Set(capDefs().map(c => c.key));
+    filter.caps = new Set((Array.isArray(s.caps) ? s.caps : []).filter(c => caps.has(c)));
   } catch (e) { logError(logTag('Filter', 'Err', 'Load'), e); }
 }
 
-// ── Render status + score buttons dynamically (DRY: classes from shared maps) ─
+// ── Render the options from their definitions (DRY: classes from shared maps) ─
 
 function _renderStatusOptions() {
   const container = document.getElementById('filter-status');
   if (!container) return;
-  setHTML(container, STATUS_DEFS.map(d => {
+  setHTML(container, statusDefs().map(d => {
     const isActive = d.key === filter.status;
-    return `<button type="button" data-status="${d.key}"${isActive ? ' class="active"' : ''}>${dotHTML(d.dot)}${d.label}</button>`;
+    return `<button type="button" data-status="${d.key}"${isActive ? ' class="active"' : ''} aria-pressed="${isActive}">${dotHTML(d.dot)}${esc(d.label)}</button>`;
   }).join(''));
+}
+
+function _renderSpecOptions() {
+  for (const g of SPEC_GROUPS) {
+    const container = document.getElementById(g.container);
+    if (!container) continue;
+    setHTML(container, [_ALL, ...g.defs].map(d =>
+      `<button type="button" data-${g.attr}="${d.key}">${esc(d.label)}</button>`).join(''));
+  }
+  const caps = document.getElementById('filter-caps');
+  if (caps) {
+    setHTML(caps, capDefs().map(c =>
+      `<button type="button" class="notif-chip" data-cap="${c.key}" title="${esc(c.desc)}">${esc(c.label)}</button>`).join(''));
+  }
 }
 
 function _renderScoreSegments() {
   const panel = document.getElementById('filter-score-panel');
   if (!panel) return;
-  // Metric tabs + single shared range selector (8 elements instead of 18)
+  // Metric tabs + single shared range selector
   const tabs = SCORE_METRICS.map((m, i) => {
     const hasFilter = filter[m.key] !== 'all';
     const cls = [
@@ -288,21 +298,32 @@ function _renderScoreSegments() {
       i === _activeScoreTab ? 'active' : '',
       hasFilter ? 'has-filter' : '',
     ].filter(Boolean).join(' ');
-    return `<button type="button" class="${cls}" data-score-tab="${i}" aria-label="${m.label}${hasFilter ? ', 1 filter active' : ''}">${m.label}</button>`;
+    const label = esc(_scoreMetricLabel(m));
+    return `<button type="button" class="${cls}" data-score-tab="${i}" aria-label="${label}${hasFilter ? ', 1 filter active' : ''}">${label}</button>`;
   }).join('');
   const current = filter[SCORE_METRICS[_activeScoreTab].key];
-  const rangeBtns = SCORE_DEFS.map(d => {
+  const rangeBtns = scoreDefs().map(d => {
     const isActive = d.key === current;
     const classes = [
       isActive ? 'active' : '',
       d.tierKey ? TIER_TEXT[d.tierKey] : (isActive ? 'text-text-primary' : 'text-text-muted'),
       isActive && d.tierKey ? TIER_BG[d.tierKey] : '',
     ].filter(Boolean).join(' ');
-    return `<button type="button" data-score="${d.key}" class="${classes}">${d.label}</button>`;
+    return `<button type="button" data-score="${d.key}" class="${classes}">${esc(d.label)}</button>`;
   }).join('');
   setHTML(panel,
     `<div class="filter-score-tabs" role="group" aria-label="Score metric">${tabs}</div>` +
-    `<div id="filter-score-range" class="filter-seg" role="group" aria-label="Filter by ${SCORE_METRICS[_activeScoreTab].label.toLowerCase()} score">${rangeBtns}</div>`);
+    `<div id="filter-score-range" class="filter-seg" role="group" aria-label="Filter by ${esc(_scoreMetricLabel(SCORE_METRICS[_activeScoreTab]).toLowerCase())} score">${rangeBtns}</div>`);
+}
+
+// Options that depend on config (labels, score tiers, capabilities) re-render when it changes
+export function renderFilterOptions() {
+  if (!_initialized) return;
+  _renderStatusOptions();
+  _renderScoreSegments();
+  _renderSpecOptions();
+  _syncUI();
+  applyFilter();
 }
 
 // ── UI sync: button active states from filter state ───────────────────────
@@ -311,9 +332,10 @@ function _syncUI() {
   const si = document.getElementById('filter-search');
   if (si && si.value !== filter.search) si.value = filter.search;
 
-  // Status: toggle active on the matching button
   document.querySelectorAll('#filter-status [data-status]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.status === filter.status);
+    const active = btn.dataset.status === filter.status;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
   });
 
   // Score: sync tab has-filter dots + shared range selector
@@ -321,18 +343,19 @@ function _syncUI() {
     tab.classList.toggle('has-filter', filter[SCORE_METRICS[i].key] !== 'all');
   });
   const activeMetric = SCORE_METRICS[_activeScoreTab];
+  const defs = scoreDefs();
   document.querySelectorAll('#filter-score-range [data-score]').forEach(btn => {
     const isActive = btn.dataset.score === filter[activeMetric.key];
-    const def = SCORE_DEFS.find(d => d.key === btn.dataset.score);
+    const def = defs.find(d => d.key === btn.dataset.score);
     btn.classList.toggle('active', isActive);
     if (def?.tierKey) btn.classList.toggle(TIER_BG[def.tierKey], isActive);
   });
 
-  _syncSeg('#filter-ctx [data-ctx]',    'ctx',  k => k === filter.context);
-  _syncSeg('#filter-param [data-param]', 'param', k => k === filter.paramSize);
+  for (const g of SPEC_GROUPS) _syncSeg(`#${g.container} [data-${g.attr}]`, g.attr, k => k === filter[g.key]);
 
   document.querySelectorAll('#filter-caps [data-cap]').forEach(btn => {
     btn.classList.toggle('on', filter.caps.has(btn.dataset.cap));
+    btn.setAttribute('aria-pressed', String(filter.caps.has(btn.dataset.cap)));
   });
 
   // Count active filters per dropdown and update badge + aria-label
@@ -371,10 +394,11 @@ function _syncSeg(selector, attr, isActive) {
     btn.classList.toggle('active', active);
     btn.classList.toggle('text-text-primary', active);
     btn.classList.toggle('text-text-muted', !active);
+    btn.setAttribute('aria-pressed', String(active));
   });
 }
 
-// ── UI: result count + active filter chips ────────────────────────────────
+// ── UI: result count + active filter chips + empty state ─────────────────
 
 function _updateCount(visible, total) {
   const el = document.getElementById('filter-count');
@@ -385,34 +409,36 @@ function _updateCount(visible, total) {
   footer.hidden = !active;
 }
 
+function _chips() {
+  const chips = [];
+  if (filter.search) chips.push({ label: `"${filter.search}"`, clear: 'search' });
+  if (filter.status !== 'all') {
+    const d = statusDefs().find(s => s.key === filter.status);
+    chips.push({ label: d?.label || filter.status, clear: 'status' });
+  }
+  const sdefs = scoreDefs();
+  for (const m of SCORE_METRICS) {
+    if (filter[m.key] !== 'all') {
+      const d = sdefs.find(s => s.key === filter[m.key]);
+      chips.push({ label: `${_scoreMetricLabel(m)} ${d?.label || filter[m.key]}`, clear: m.key });
+    }
+  }
+  for (const g of SPEC_GROUPS) {
+    if (filter[g.key] === 'all') continue;
+    const d = g.defs.find(x => x.key === filter[g.key]);
+    chips.push({ label: `${g.chip} ${d?.label || filter[g.key]}`, clear: g.clear });
+  }
+  for (const cap of filter.caps) {
+    const d = capDefs().find(c => c.key === cap);
+    chips.push({ label: d?.label || cap, clear: `cap:${cap}` });
+  }
+  return chips;
+}
+
 function _updateChips() {
   const container = document.getElementById('filter-chips');
   if (!container) return;
-  const chips = [];
-  if (filter.search)         chips.push({ label: `"${filter.search}"`,  clear: 'search' });
-  if (filter.status !== 'all') {
-    const d = STATUS_DEFS.find(s => s.key === filter.status);
-    chips.push({ label: d?.label || filter.status, clear: 'status' });
-  }
-  for (const m of SCORE_METRICS) {
-    if (filter[m.key] !== 'all') {
-      const d = SCORE_DEFS.find(s => s.key === filter[m.key]);
-      chips.push({ label: `${m.label} ${d?.label || filter[m.key]}`, clear: m.key });
-    }
-  }
-  if (filter.context !== 'all') {
-    const d = CONTEXT_DEFS.find(c => c.key === filter.context);
-    chips.push({ label: `Ctx ${d?.label || filter.context}`, clear: 'context' });
-  }
-  if (filter.paramSize !== 'all') {
-    const d = PARAM_DEFS.find(p => p.key === filter.paramSize);
-    chips.push({ label: `Params ${d?.label || filter.paramSize}`, clear: 'param' });
-  }
-  for (const cap of filter.caps) {
-    const d = CAP_DEFS.find(c => c.key === cap);
-    chips.push({ label: d?.label || cap, clear: `cap:${cap}` });
-  }
-
+  const chips = _chips();
   if (!chips.length) {
     container.hidden = true;
     setHTML(container, '');
@@ -420,8 +446,17 @@ function _updateChips() {
   }
   container.hidden = false;
   setHTML(container, chips.map(c =>
-    `<button type="button" class="filter-chip" data-clear="${c.clear}">${esc(c.label)}<span class="filter-chip-x">&times;</span></button>`
+    `<button type="button" class="filter-chip" data-clear="${c.clear}" aria-label="Remove filter ${esc(c.label)}">${esc(c.label)}<span class="filter-chip-x" aria-hidden="true">&times;</span></button>`
   ).join(''));
+}
+
+// A filter that matches nothing says so and names what it filters on (finding F67)
+function _updateEmptyState(visible) {
+  const el = document.getElementById('filter-empty');
+  if (!el) return;
+  const empty = visible === 0 && filterActive() && state.models.length > 0;
+  el.hidden = !empty;
+  if (empty) setText(el.querySelector('.filter-empty-detail'), _chips().map(c => c.label).join(', '));
 }
 
 // ── Grey out filter options that would show zero models ───────────────────
@@ -457,7 +492,7 @@ function _setBtnDisabled(btn, disabled) {
 
 function _updateDisabledOptions() {
   // Status: skip "all" (always available) and current selection
-  for (const d of STATUS_DEFS) {
+  for (const d of statusDefs()) {
     if (d.key === 'all' || d.key === filter.status) continue;
     _setBtnDisabled(
       document.querySelector(`#filter-status [data-status="${d.key}"]`),
@@ -467,7 +502,7 @@ function _updateDisabledOptions() {
 
   // Score: check the active tab's range options
   const activeMetric = SCORE_METRICS[_activeScoreTab];
-  for (const d of SCORE_DEFS) {
+  for (const d of scoreDefs()) {
     if (d.key === 'all' || d.key === filter[activeMetric.key]) continue;
     _setBtnDisabled(
       document.querySelector(`#filter-score-range [data-score="${d.key}"]`),
@@ -475,34 +510,21 @@ function _updateDisabledOptions() {
     );
   }
 
-  // Context: skip "all" and current selection
-  for (const d of CONTEXT_DEFS) {
-    if (d.key === 'all' || d.key === filter.context) continue;
-    _setBtnDisabled(
-      document.querySelector(`#filter-ctx [data-ctx="${d.key}"]`),
-      _countWithOverride('context', d.key) === 0
-    );
-  }
-
-  // Params: skip "all" and current selection
-  for (const d of PARAM_DEFS) {
-    if (d.key === 'all' || d.key === filter.paramSize) continue;
-    _setBtnDisabled(
-      document.querySelector(`#filter-param [data-param="${d.key}"]`),
-      _countWithOverride('paramSize', d.key) === 0
-    );
+  // Context and params: skip "all" and the current selection
+  for (const g of SPEC_GROUPS) {
+    for (const d of g.defs) {
+      if (d.key === filter[g.key]) continue;
+      _setBtnDisabled(
+        document.querySelector(`#${g.container} [data-${g.attr}="${d.key}"]`),
+        _countWithOverride(g.key, d.key) === 0
+      );
+    }
   }
 
   // Capabilities: only check unselected ones (selected are always available)
-  for (const d of CAP_DEFS) {
-    if (filter.caps.has(d.key)) {
-      _setBtnDisabled(document.querySelector(`#filter-caps [data-cap="${d.key}"]`), false);
-      continue;
-    }
-    _setBtnDisabled(
-      document.querySelector(`#filter-caps [data-cap="${d.key}"]`),
-      _countWithCap(d.key) === 0
-    );
+  for (const d of capDefs()) {
+    const btn = document.querySelector(`#filter-caps [data-cap="${d.key}"]`);
+    _setBtnDisabled(btn, !filter.caps.has(d.key) && _countWithCap(d.key) === 0);
   }
 }
 
@@ -524,7 +546,7 @@ function _clearAll() {
   filter.paramSize = 'all';
   filter.caps.clear();
   _commit();
-  logInfo(logTag('Filter', '\u2192', 'Clear'));
+  logInfo(logTag('Filter', '→', 'Clear'));
 }
 
 function _clearChipType(type) {
@@ -536,12 +558,14 @@ function _clearChipType(type) {
 }
 
 // ── Shared panel toggle (used by score, status, and specs buttons) ─────────
+// An open panel is a layer: Escape closes the top one only (finding F49)
 
 const PANELS = [
   { panel: 'filter-status-panel', btn: 'filter-status-toggle' },
   { panel: 'filter-score-panel',  btn: 'filter-score-toggle' },
   { panel: 'filter-specs',        btn: 'filter-specs-toggle' },
 ];
+const _panelLayers = new Map();
 
 function _setPanel(panelId, open) {
   const panel = document.getElementById(panelId);
@@ -553,6 +577,12 @@ function _setPanel(panelId, open) {
     btn.classList.toggle('active', open);
     btn.setAttribute('aria-expanded', String(open));
   }
+  if (open && !_panelLayers.has(panelId)) {
+    _panelLayers.set(panelId, pushLayer(() => _setPanel(panelId, false)));
+  } else if (!open && _panelLayers.has(panelId)) {
+    _panelLayers.get(panelId)();
+    _panelLayers.delete(panelId);
+  }
 }
 
 function _togglePanel(panelId) {
@@ -561,7 +591,6 @@ function _togglePanel(panelId) {
 }
 
 function _closeAllPanels() { for (const { panel } of PANELS) _setPanel(panel, false); }
-function _anyPanelOpen() { return PANELS.some(({ panel }) => { const p = document.getElementById(panel); return p && !p.hidden; }); }
 
 // ── Event wiring ──────────────────────────────────────────────────────────
 
@@ -581,8 +610,8 @@ function _wireEvents() {
       }, SEARCH_DEBOUNCE_MS);
     });
     searchInput.addEventListener('keydown', e => {
-      // Escape closes an open dropdown first; only clears the search when no panel is open.
-      if (e.key === 'Escape' && filter.search && !_anyPanelOpen()) {
+      // With no layer open, Escape clears the search; otherwise it closes the top layer (app.js)
+      if (e.key === 'Escape' && filter.search && !openLayerCount()) {
         e.preventDefault();
         filter.search = '';
         searchInput.value = '';
@@ -637,11 +666,10 @@ function _wireEvents() {
       return;
     }
 
-    const ctxBtn = e.target.closest('[data-ctx]');
-    if (ctxBtn) { filter.context = ctxBtn.dataset.ctx; _commit(); return; }
-
-    const paramBtn = e.target.closest('[data-param]');
-    if (paramBtn) { filter.paramSize = paramBtn.dataset.param; _commit(); return; }
+    for (const g of SPEC_GROUPS) {
+      const btn = e.target.closest(`[data-${g.attr}]`);
+      if (btn) { filter[g.key] = btn.dataset[g.attr]; _commit(); return; }
+    }
 
     const capBtn = e.target.closest('[data-cap]');
     if (capBtn) {
@@ -653,17 +681,13 @@ function _wireEvents() {
     }
   });
 
+  document.getElementById('filter-empty')?.addEventListener('click', e => {
+    if (e.target.closest('[data-clear-all]')) _clearAll();
+  });
+
   // Close open dropdowns when clicking outside the filter bar.
   document.addEventListener('click', e => {
     if (!bar.contains(e.target)) _closeAllPanels();
-  });
-  // Escape closes any open dropdown panel (the search input handles its own
-  // Escape only when no panel is open, so the first Escape closes a panel).
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && _anyPanelOpen()) {
-      _closeAllPanels();
-      e.preventDefault();
-    }
   });
 }
 
@@ -679,11 +703,12 @@ export function initFilter() {
   _load();
   _renderStatusOptions();
   _renderScoreSegments();
+  _renderSpecOptions();
   _syncUI();
   _wireEvents();
   bar.hidden = false;
   applyFilter();
-  logInfo(logTag('Filter', '\u2192', 'Init'));
+  logInfo(logTag('Filter', '→', 'Init'));
 }
 
 // Invalidate haystack cache when model list changes (called from dom.js if needed)

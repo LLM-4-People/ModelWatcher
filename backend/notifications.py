@@ -215,7 +215,7 @@ def _send_push_sync(title: str, body: str, tag: str = "mw-event", event_type: st
                 vapid_private_key=push_routes.vapid_private,
                 vapid_claims={"sub": c.vapid_email},
                 ttl=c.notif_push_ttl,
-                timeout=30,
+                timeout=c.notif_push_timeout,
             )
             sent += 1
         except Exception as e:
@@ -283,13 +283,11 @@ def _detect_transition(current_tier: int | None, prev_tier: int | None, degraded
     return None
 
 
-# 5-min cooldown for repeated "initial" degradation notifications (per model+metric).
+# Cooldown for repeated "initial" degradation notifications (per model+metric, notifications.metric_cooldown).
 # "further" and "recovery" transitions always fire - only "initial" is rate-limited.
 _METRIC_NOTIF_COOLDOWN: dict[str, float] = {}
-_METRIC_NOTIF_COOLDOWN_SECS = 300.0
-# 2-min cooldown for repeated status-change notifications per model.
+# Cooldown for repeated status-change notifications per model (notifications.status_cooldown).
 _STATUS_NOTIF_COOLDOWN: dict[str, float] = {}
-_STATUS_NOTIF_COOLDOWN_SECS = 120.0
 
 
 def _check_metric_degradation(
@@ -358,12 +356,12 @@ def _check_metric_degradation(
         return result
     if transition == "initial" and c.notif_events.get(degraded_event, True):
         if len(_METRIC_NOTIF_COOLDOWN) > 100:
-            stale = [k for k, v in _METRIC_NOTIF_COOLDOWN.items() if now - v >= _METRIC_NOTIF_COOLDOWN_SECS]
+            stale = [k for k, v in _METRIC_NOTIF_COOLDOWN.items() if now - v >= c.notif_metric_cooldown]
             for k in stale:
                 del _METRIC_NOTIF_COOLDOWN[k]
         ck = f"{model_key}:{metric}"
         last = _METRIC_NOTIF_COOLDOWN.get(ck, 0)
-        if now - last < _METRIC_NOTIF_COOLDOWN_SECS:
+        if now - last < c.notif_metric_cooldown:
             mc[f"{metric}_degraded_since"] = now
             return None
         mc[f"{metric}_degraded_since"] = now
@@ -634,11 +632,11 @@ async def notify_status_change(model_key: str, event_type: str, uptime_pct: floa
         if event_type != "offline":
             now = time.time()
             if len(_STATUS_NOTIF_COOLDOWN) > 100:
-                stale = [k for k, v in _STATUS_NOTIF_COOLDOWN.items() if now - v >= _STATUS_NOTIF_COOLDOWN_SECS]
+                stale = [k for k, v in _STATUS_NOTIF_COOLDOWN.items() if now - v >= c.notif_status_cooldown]
                 for k in stale:
                     del _STATUS_NOTIF_COOLDOWN[k]
             last = _STATUS_NOTIF_COOLDOWN.get(model_key, 0)
-            if now - last < _STATUS_NOTIF_COOLDOWN_SECS:
+            if now - last < c.notif_status_cooldown:
                 log.info("Notification for %s (%s) skipped: status cooldown", model_key, event_type)
                 return
             _STATUS_NOTIF_COOLDOWN[model_key] = now

@@ -1,21 +1,20 @@
 // DOM rendering: cards, provider sections, badges, status decorations.
 // buildCardDOM constructs full innerHTML; updateCardDOM does targeted element
-// updates on WS messages. Metric tiles render from last_test only (no fallback).
-import { state, recalcCounts, setMetrics, LS } from './state.js';
-import { slug, esc, logError, logDebug, logTag, chevronSVG, setHTML, setClass, setText, STATUS_GLYPH, SEP_TEXT, sepHTML, segmentsHTML } from './utils.js';
-import { tpsColor, ttftColor, uptimeColor, p99ItlColor, scoreColor, trendArrow, trendColor, trendDelta, fmtTps, fmtTTFT, fmtUptime, fmtSeconds, fmtMsCompact, fmtNum, timeAgo, fmtContext, fmtCritical, STATUS_TEXT, degradedDescHTML, recordErrorText, freshnessTextCls, fmtEventTime, fmtSince, metricCellHTML, testTypeLabel } from './format.js';
+// updates on WS messages. Metric tiles come from format.js METRIC_TILES, shared with the modal.
+import { state, recalcCounts, setMetrics, LS, countByStatus } from './state.js';
+import { slug, esc, logError, logDebug, logTag, chevronSVG, setHTML, setText, STATUS_GLYPH, SEP_TEXT, sepHTML, segmentsHTML } from './utils.js';
+import { scoreColor, trendArrow, trendColor, trendDelta, fmtNum, fmtSeconds, timeAgo, fmtContext, STATUS_TEXT, degradedDescHTML, recordErrorText, freshnessTextCls, fmtEventTime, fmtSince, metricTileHTML, testTypeLabel, statusLabel, metricLabel, modelCapabilities, capabilityLinesHTML, chartViews, lastBenchmarkFailed, TESTING_LABEL, secondaryModelId } from './format.js';
 import { updateStatusLegend } from './help.js';
-import { observeChart, unobserveChartsInContainer, initPendingChartsInContainer, disconnectLazyChartObserver, CHART_VIEWS, getCardView, switchCardView, _fetchMetaClear, chartPhHTML } from './chart.js';
+import { observeChart, unobserveChartsInContainer, initPendingChartsInContainer, disconnectLazyChartObserver, getCardView, switchCardView, _fetchMetaClear, chartPhHTML } from './chart.js';
 import { fetchProviderMetrics, fetchProviders, fetchModelInfoCapabilities } from './api.js';
 import { registerTip } from './tooltips.js';
-import { applyFilter, invalidateFilterCache } from './filter.js';
+import { applyFilter, invalidateFilterCache, entryVisible, onFilterApplied } from './filter.js';
 
 let _scheduleUIFn = null;
 export function setScheduleUI(fn) { _scheduleUIFn = fn; }
 
 function _scheduleUI(opts) { if (_scheduleUIFn) _scheduleUIFn(opts); }
 
-let _provTipSeq = 0;
 let _scrollObserver = null;
 let _pendingFetches = new Set();
 
@@ -59,7 +58,7 @@ export function providerName(name, url, extraClasses = '', logoSrc = '', title =
   const text = esc(name);
   let tipAttr = '';
   if (title) {
-    const id = `prov-${++_provTipSeq}`;
+    const id = `tip-prov-${slug(name)}`;
     registerTip(id, esc(title));
     tipAttr = ` data-tip-id="${id}"`;
   }
@@ -75,8 +74,6 @@ function deferredCardsHTML(count) {
   ).join('');
 }
 
-const _STATUS_ORDER = ['online', 'degraded', 'error', 'testing'];
-
 function _providerScoreBadges(provider) {
   const ps = state.providerSummaries[provider];
   if (!ps) return '';
@@ -85,7 +82,6 @@ function _providerScoreBadges(provider) {
   const trends = ps.trends || {};
   const items = [];
   const tipLines = [];
-  const total = ps.total || 0;
   const c = scores.consistency, s = scores.speed, r = scores.reliability;
   const hasAny = c != null || s != null;
   for (const [label, score, trendKey] of [['C', c, 'consistency_score'], ['S', s, 'speed_score'], ['R', r, 'reliability_score']]) {
@@ -98,30 +94,30 @@ function _providerScoreBadges(provider) {
   if (ps.since_ts != null) {
     sinceLine = `<span class="block text-center w-full text-text-faint">Since ${fmtSince(ps.since_ts * 1000)}</span>`;
   }
-  const groupHTML = _scoreGroupHTML(items, tipLines, 'pscores', sinceLine);
+  const groupHTML = _scoreGroupHTML(items, tipLines, `tip-pscores-${slug(provider)}`, sinceLine);
   return groupHTML || '';
 }
 
-function providerCountBadges(counts, total, slugStr, providerName) {
-  const idAttr = slugStr ? ` id="phealth-${slugStr}"` : '';
-  const hasAny = _STATUS_ORDER.some(k => counts[k] > 0);
-  const scoreHTML = providerName ? _providerScoreBadges(providerName) : '';
-  const sep = scoreHTML ? sepHTML('rule') : '';
-  const archivedCount = providerName ? state.models.filter(e => e.provider === providerName && e.archived).length : 0;
-  const archivedBadge = archivedCount > 0 ? `<span class="text-text-faint">${archivedCount}</span>` : '';
-  if (!hasAny) {
-    if (total === 0 && !scoreHTML && archivedCount === 0) return '';
-    const tail = total || '';
-    return `<span class="text-xs ml-auto flex items-center gap-2"${idAttr}>${scoreHTML}${tail ? sep : ''}${tail}${archivedBadge}</span>`;
-  }
-  const badges = _STATUS_ORDER
-    .filter(k => counts[k] > 0)
-    .map(k => `<span class="${STATUS_TEXT[k]}">${counts[k]}</span>`)
-    .join('');
-  const ariaParts = _STATUS_ORDER.filter(k => counts[k] > 0).map(k => `${counts[k]} ${k}`);
-  if (archivedCount > 0) ariaParts.push(`${archivedCount} archived`);
-  const aria = ariaParts.join(', ');
-  return `<span class="text-xs ml-auto flex items-center gap-2" aria-label="${aria}"${idAttr}>${scoreHTML}${sep}${badges}${archivedBadge}</span>`;
+// The counts a provider header shows: its models on screen, so a filter narrows them like the
+// cards (finding F69: they were the server's unfiltered totals)
+function providerCounts(provider) {
+  const entries = state.models.filter(e => e.provider === provider && !e.archived && entryVisible(e));
+  return countByStatus(entries, state.metrics);
+}
+
+// Each count next to its label ("4 Online"), one list the header and screen readers read alike
+function providerCountBadges(provider) {
+  const slugStr = slug(provider);
+  const counts = providerCounts(provider);
+  const items = [...state.statusValues.map(s => [s, statusLabel(s)]), ['testing', TESTING_LABEL]]
+    .filter(([k]) => counts[k] > 0)
+    .map(([k, label]) => segmentsHTML([`<span class="${STATUS_TEXT[k]}">${counts[k]}</span>`, `<span class="text-text-muted">${esc(label)}</span>`], { cls: 'provider-count' }));
+  const archivedCount = state.models.filter(e => e.provider === provider && e.archived).length;
+  if (archivedCount > 0) items.push(segmentsHTML([`<span>${archivedCount}</span>`, '<span>Archived</span>'], { cls: 'provider-count text-text-faint' }));
+  const scoreHTML = _providerScoreBadges(provider);
+  if (!items.length && !scoreHTML) return '';
+  const countsHTML = items.length ? segmentsHTML(items, { sep: 'dot', cls: 'provider-counts' }) : '';
+  return `<span class="text-xs ml-auto flex items-center gap-2" id="phealth-${slugStr}">${scoreHTML}${scoreHTML && countsHTML ? sepHTML('rule') : ''}${countsHTML}</span>`;
 }
 
 export function _healthErrorIfNewer(data, lt) {
@@ -148,10 +144,12 @@ export function _statusMessage(data, lt) {
   return [retry, msg].filter(Boolean).join(SEP_TEXT);
 }
 
-let _tipIdCounter = 0;
+// Tip ids are stable per model or provider: a redraw replaces the tip instead of adding one
+
+const _SCORE_METRIC = { C: 'consistency_score', S: 'speed_score', R: 'reliability' };
 
 function _scoreItem(label, score, trend, placeholder = false) {
-  const fullName = label === 'C' ? 'Consistency' : label === 'S' ? 'Speed' : 'Reliability';
+  const fullName = esc(metricLabel(_SCORE_METRIC[label]));
   if (score == null && !placeholder) return null;
   if (placeholder) {
     const html = `<span class="text-text-muted">${label}</span><span class="text-text-faint">--%</span>`;
@@ -175,12 +173,11 @@ function _scoreItem(label, score, trend, placeholder = false) {
   return { html, tipLine };
 }
 
-function _scoreGroupHTML(items, tipLines, tipPrefix, headerLine) {
+function _scoreGroupHTML(items, tipLines, tipId, headerLine) {
   if (!items.length) return '';
-  const tipId = `${tipPrefix}-${++_tipIdCounter}`;
   const content = (headerLine ? headerLine + '<div class="mb-0.5"></div>' : '') + tipLines.join('<br>');
   registerTip(tipId, content);
-  return `<span class="score-group" data-tip-id="${tipId}" tabindex="0">${items.join(sepHTML('rule'))}</span>`;
+  return `<span class="score-group" data-tip-id="${tipId}">${items.join(sepHTML('rule'))}</span>`;
 }
 
 function _trendSinceLine(data) {
@@ -193,7 +190,7 @@ function _trendSinceLine(data) {
   return `<span class="block text-center w-full text-text-faint">Since ${fmtSince(sinceTs * 1000)}</span>`;
 }
 
-function scoreBadges(data) {
+function scoreBadges(data, modelId) {
   const scores = data.scores;
   if (!scores) return '';
   const trends = data.trends || {};
@@ -206,57 +203,59 @@ function scoreBadges(data) {
     const item = _scoreItem(label, score, trend, label === 'R' && score == null && hasAny);
     if (item) { items.push(item.html); tipLines.push(item.tipLine); }
   }
-  return _scoreGroupHTML(items, tipLines, 'scores', _trendSinceLine(data));
+  return _scoreGroupHTML(items, tipLines, `tip-scores-${slug(modelId)}`, _trendSinceLine(data));
 }
 
 
-function capabilitiesBadge(entry) {
-  const allCaps = [
-    { key: 'thinking', label: 'Thinking', desc: 'chain-of-thought reasoning' },
-    { key: 'supports_vision', label: 'Vision', desc: 'image understanding' },
-    { key: 'supports_tools', label: 'Tools', desc: 'function/tool calling' },
-    { key: 'supports_cache', label: 'Cache', desc: 'prompt caching' },
-    { key: 'supports_structured_output', label: 'JSON', desc: 'structured output' },
-  ];
-  const caps = allCaps.filter(c => entry[c.key]);
+// Card and modal badges. Inside a card they are no tab stops (the card's button opens the
+// details, finding F74); the modal's copies are focusable for their tips.
+const _focusAttr = focusable => (focusable ? ' tabindex="0"' : '');
+
+function capabilitiesBadge(entry, focusable) {
+  const caps = modelCapabilities(entry);
   if (!caps.length) return '';
-  const tipId = `caps-${++_tipIdCounter}`;
-  const tipHTML = `Model capabilities:<br>` + caps.map(c => `\u2022 ${c.label} \u2014 ${c.desc}`).join('<br>');
-  registerTip(tipId, tipHTML);
-  return `<span class="badge-chip badge-caps" data-tip-id="${tipId}" tabindex="0"><span class="text-text-secondary">${caps.map(c => c.label).join(', ')}</span></span>`;
+  const tipId = `tip-caps-${slug(entry.id)}`;
+  registerTip(tipId, `Model capabilities:<br>${capabilityLinesHTML(caps)}`);
+  return `<span class="badge-chip badge-caps" data-tip-id="${tipId}"${_focusAttr(focusable)}><span class="text-text-secondary">${caps.map(c => esc(c.label)).join(', ')}</span></span>`;
 }
 
 
-function offlineBadge(lt, status, data) {
+function offlineBadge(lt, status, data, focusable, modelId) {
   if (status !== 'error') return '';
-  const tipId = `off-${++_tipIdCounter}`;
+  const tipId = `tip-off-${slug(modelId)}`;
   const errText = _statusMessage(data, lt) || 'Endpoint unreachable';
   const eventTs = _eventTimestamp(data, lt);
   const tsStr = eventTs ? fmtEventTime(eventTs) : '';
   const tipText = tsStr ? `${tsStr}${SEP_TEXT}${errText}` : errText;
   registerTip(tipId, esc(tipText));
-  return `<span class="badge-chip" data-tip="offline" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">${STATUS_GLYPH.failed}</span><span class="${STATUS_TEXT.error}">Offline</span></span>`;
+  return `<span class="badge-chip" data-tip="error" data-tip-id="${tipId}"${_focusAttr(focusable)}><span class="text-text-muted">${STATUS_GLYPH.failed}</span><span class="${STATUS_TEXT.error}">${esc(statusLabel('error'))}</span></span>`;
 }
 
-function degradedBadge(lt, status) {
+// Degraded because of a failed last benchmark (health checks pass): the error is the reason (F59)
+function _degradedTipHTML(lt) {
+  if (lt.success === false) return `Last benchmark failed:<br>${esc(recordErrorText(lt) || 'no response')}`;
+  return degradedDescHTML(lt);
+}
+
+function degradedBadge(lt, status, focusable, modelId) {
   if (!lt.degraded && status !== 'degraded') return '';
-  const tipId = `deg-${++_tipIdCounter}`;
-  const desc = degradedDescHTML(lt);
+  const tipId = `tip-deg-${slug(modelId)}`;
+  const desc = _degradedTipHTML(lt);
   const tsStr = lt.timestamp ? fmtEventTime(lt.timestamp) : '';
   const tip = tsStr ? `<span class="opacity-60">${esc(tsStr)}</span><br>${desc}` : desc;
   registerTip(tipId, tip);
-  return `<span class="badge-chip" data-tip="degraded" data-tip-id="${tipId}" tabindex="0"><span class="text-text-muted">${STATUS_GLYPH.degraded}</span><span class="${STATUS_TEXT.degraded}">Degraded</span></span>`;
+  return `<span class="badge-chip" data-tip="degraded" data-tip-id="${tipId}"${_focusAttr(focusable)}><span class="text-text-muted">${STATUS_GLYPH.degraded}</span><span class="${STATUS_TEXT.degraded}">${esc(statusLabel('degraded'))}</span></span>`;
 }
 
-function archivedBadge(entry) {
+function archivedBadge(entry, focusable) {
   if (!entry.archived) return '';
-  return `<span class="badge-chip badge-archived" data-tip="archived" tabindex="0"><span class="text-text-muted">\u2139</span><span class="text-text-faint">Archived</span></span>`;
+  return `<span class="badge-chip badge-archived" data-tip="archived"${_focusAttr(focusable)}><span class="text-text-muted">\u2139</span><span class="text-text-faint">Archived</span></span>`;
 }
 
-function topBadges(lt, status, data, entry) {
-  const statusBadge = status === 'error' ? offlineBadge(lt, status, data) : degradedBadge(lt, status);
-  const caps = capabilitiesBadge(entry || {});
-  const archived = archivedBadge(entry || {});
+function topBadges(lt, status, data, entry, { focusable = false } = {}) {
+  const statusBadge = status === 'error' ? offlineBadge(lt, status, data, focusable, entry.id) : degradedBadge(lt, status, focusable, entry.id);
+  const caps = capabilitiesBadge(entry, focusable);
+  const archived = archivedBadge(entry, focusable);
   if (statusBadge) return statusBadge + caps + archived;
   if (archived) return archived + caps;
   return caps;
@@ -353,12 +352,11 @@ export function updateTimeAgoLabels() {
   });
 }
 
-function _latestTTFT(data, displayLt, isOffline) {
-  if (isOffline) return displayLt.ttft_ms;
-  const benchEpoch = data.last_benchmark_epoch || 0;
-  const healthEpoch = data.health_ts_epoch || 0;
-  if (healthEpoch > benchEpoch && data.health_ttft_ms != null) return data.health_ttft_ms;
-  return displayLt.ttft_ms;
+// The card's four tiles, the same definitions and values as the modal's (finding F58)
+const _CARD_TILES = ['ttft', 'tps', 'p99', 'uptime'];
+
+function _cardTilesHTML(data) {
+  return _CARD_TILES.map(key => metricTileHTML(key, data, { form: 'short' })).join('');
 }
 
 function _modelInfoLine(entry, safeId) {
@@ -377,41 +375,36 @@ function _modelInfoLine(entry, safeId) {
   return `<div id="mi-${safeId}" class="mt-1 text-[10px] text-text-faint truncate">${segmentsHTML(parts, { sep: 'dot' })}</div>`;
 }
 
+// A card is an article whose heading is the button that opens the model's details; everything
+// else in it is hover detail, not a tab stop (finding F74: cards were role=button with nested
+// focusables, and nothing below the h1 was a heading)
 function buildCardDOM(entry, data) {
-  const lt = data.last_test || {};
   const safeId = slug(entry.id);
   const { isD, isE, isUnknown, isArchived, isBenchmarkTesting } = statusDecorState(data);
   const glowCls = (isBenchmarkTesting ? ' testing-pulse' : '') + (isArchived ? ' archived-glow' : isD ? ' degraded-glow' : isE ? ' error-glow' : isUnknown ? '' : ' online-glow');
-  const nameTag = `<span class="font-semibold text-sm cursor-pointer transition-colors truncate">${esc(entry.name)}</span>`;
-  const ttftVal = _latestTTFT(data, lt);
-  const p99Val = lt.raw_p99_itl_ms;
-  const scoreHTML = scoreBadges(data);
+  const secondary = secondaryModelId(entry);
+  const scoreHTML = scoreBadges(data, entry.id);
   if (entry.description) registerTip(`mi-${safeId}`, esc(entry.description));
   const archivedCls = entry.archived ? ' archived-card' : '';
   return `
-  <div id="card-${safeId}" class="min-w-0 bg-raised rounded-xl card-hover fade-in-once cursor-pointer px-3 pt-3 pb-0${glowCls}${archivedCls}" data-model-key="${safeId}" role="button" tabindex="0" aria-label="View details for ${esc(entry.name)}">
+  <article id="card-${safeId}" class="model-card min-w-0 bg-raised rounded-xl card-hover fade-in-once cursor-pointer px-3 pt-3 pb-0${glowCls}${archivedCls}" data-model-key="${safeId}" aria-labelledby="card-title-${safeId}">
      <div class="flex items-start justify-between shrink-0">
-      <div class="flex flex-col min-w-0 overflow-hidden"${entry.description ? ` data-tip-id="mi-${safeId}" tabindex="0"` : ''}>
+      <div class="flex flex-col min-w-0 overflow-hidden"${entry.description ? ` data-tip-id="mi-${safeId}"` : ''}>
         <div class="flex items-center gap-2">
-          ${nameTag}
-          <span id="testing-label-${safeId}" class="testing-dots ${isBenchmarkTesting ? 'inline-flex' : 'hidden'}" data-tip="testing" tabindex="0"><span></span><span></span><span></span></span>
+          <h3 class="card-title font-semibold text-sm truncate"><button type="button" id="card-title-${safeId}" class="card-open" data-open-model="${safeId}">${esc(entry.name)}</button></h3>
+          <span id="testing-label-${safeId}" class="testing-dots ${isBenchmarkTesting ? 'inline-flex' : 'hidden'}" data-tip="testing"><span></span><span></span><span></span></span>
         </div>
-         <div class="text-xs font-mono text-text-muted ml-0 truncate">${esc(entry.model_id)}</div>
+        ${secondary ? `<div class="text-xs font-mono text-text-muted ml-0 truncate">${esc(secondary)}</div>` : ''}
         ${_modelInfoLine(entry, safeId)}
       </div>
       <div id="badges-${safeId}" class="flex flex-col gap-1 shrink-0 items-end">
-        ${topBadges(lt, data.status, data, entry)}
+        ${topBadges(data.last_test || {}, data.status, data, entry)}
       </div>
     </div>
     <div id="scores-${safeId}" class="${scoreHTML ? 'flex justify-center mb-1 mt-1' : 'mb-1'}">${scoreHTML || ''}</div>
-    <div class="grid grid-cols-4 gap-2 text-center">
-      ${metricCellHTML({ label: 'TTFT', tipKey: 'ttft', colorVar: 'ttft', valueCls: ttftVal != null ? ttftColor(ttftVal) : '', valueHTML: ttftVal != null ? fmtCritical('ttft', ttftVal, fmtTTFT(ttftVal)) : '-', id: `ttft-${safeId}`, wrapperCls: ttftVal == null ? 'hidden' : '' })}
-      ${metricCellHTML({ label: 'TPS', tipKey: 'tps', colorVar: 'tps', valueCls: lt.tps != null ? tpsColor(lt.tps) : '', valueHTML: lt.tps != null ? fmtCritical('tps', lt.tps, fmtTps(lt.tps)) : '-', id: `tps-${safeId}`, wrapperCls: lt.tps == null ? 'hidden' : '' })}
-      ${metricCellHTML({ label: 'P99 ITL', tipKey: 'p99Itl', colorVar: 'tails', valueCls: p99Val != null ? p99ItlColor(p99Val) : '', valueHTML: p99Val != null ? fmtCritical('raw_p99_itl_ms', p99Val, fmtMsCompact(p99Val)) : '-', id: `p99-${safeId}`, wrapperCls: p99Val == null ? 'hidden' : '' })}
-      ${metricCellHTML({ label: 'Uptime', tipKey: 'uptime', colorVar: 'uptime', valueCls: data.uptime_pct != null ? uptimeColor(data.uptime_pct) : '', valueHTML: data.uptime_pct != null ? fmtCritical('uptime', data.uptime_pct, fmtUptime(data.uptime_pct)) : '-', id: `up-${safeId}`, wrapperCls: data.uptime_pct == null ? 'hidden' : '' })}
-    </div>
-      <div class="h-36 relative mb-3"><canvas id="chart-${safeId}" class="w-full h-full" width="300" height="144"></canvas>${chartPhHTML('chart-' + safeId, isArchived ? 'No data' : (data.data_start_epoch ? 'No data' : 'No data yet'))}</div>
-  </div>`;
+    <div id="tiles-${safeId}" class="grid grid-cols-4 gap-2 text-center">${_cardTilesHTML(data)}</div>
+      <div class="h-36 relative mb-3"><canvas id="chart-${safeId}" class="w-full h-full" width="300" height="144" aria-hidden="true"></canvas>${chartPhHTML('chart-' + safeId, isArchived ? 'No data' : (data.data_start_epoch ? 'No data' : 'No data yet'))}</div>
+  </article>`;
 }
 
 export function updateCardDOM(modelId) {
@@ -434,26 +427,12 @@ export function updateCardDOM(modelId) {
 
   const scoresEl = document.getElementById(`scores-${safeId}`);
   if (scoresEl) {
-    const sg = scoreBadges(data);
+    const sg = scoreBadges(data, entry.id);
     scoresEl.className = sg ? 'flex justify-center mb-1 mt-1' : 'mb-1';
     setHTML(scoresEl, sg || '');
   }
 
-  const isE = data.status === 'error';
-
-  const ttftVal = _latestTTFT(data, lt, isE);
-  const ttftEl = document.getElementById(`ttft-${safeId}`);
-  if (ttftEl) { const w = ttftEl.parentElement; if (ttftVal != null) { if (w) w.classList.remove('hidden'); setClass(ttftEl, `text-base font-bold ${ttftColor(ttftVal)}`); setHTML(ttftEl, fmtCritical('ttft', ttftVal, fmtTTFT(ttftVal))); } else { if (w) w.classList.add('hidden'); } }
-
-  const tpsEl = document.getElementById(`tps-${safeId}`);
-  if (tpsEl) { const w = tpsEl.parentElement; if (lt.tps != null) { if (w) w.classList.remove('hidden'); setClass(tpsEl, `text-base font-bold ${tpsColor(lt.tps)}`); setHTML(tpsEl, fmtCritical('tps', lt.tps, fmtTps(lt.tps))); } else { if (w) w.classList.add('hidden'); } }
-
-  const upEl = document.getElementById(`up-${safeId}`);
-  if (upEl) { const w = upEl.parentElement; if (data.uptime_pct != null) { if (w) w.classList.remove('hidden'); setClass(upEl, `text-base font-bold ${uptimeColor(data.uptime_pct)}`); setHTML(upEl, fmtCritical('uptime', data.uptime_pct, fmtUptime(data.uptime_pct))); } else { if (w) w.classList.add('hidden'); } }
-
-  const p99Val = lt.raw_p99_itl_ms;
-  const p99El = document.getElementById(`p99-${safeId}`);
-  if (p99El) { const w = p99El.parentElement; if (p99Val != null) { if (w) w.classList.remove('hidden'); setClass(p99El, `text-base font-bold ${p99ItlColor(p99Val)}`); setHTML(p99El, fmtCritical('raw_p99_itl_ms', p99Val, fmtMsCompact(p99Val))); } else { if (w) w.classList.add('hidden'); } }
+  setHTML(document.getElementById(`tiles-${safeId}`), _cardTilesHTML(data));
 
   const miEl = document.getElementById(`mi-${safeId}`);
   if (miEl) {
@@ -466,12 +445,21 @@ export function updateCardDOM(modelId) {
 
 const _SCHEDULE_ICON = '<span aria-hidden="true">\u23f1</span>';
 
+// How often each check runs, worded as a frequency, or that testing is paused: the scheduler's
+// state comes from /api/config and every WebSocket hello (finding F90)
 export function renderSchedule() {
   const el = document.getElementById('schedule-info');
   if (!el) return;
+  const sched = state.scheduler;
+  if (sched && !sched.running) {
+    el.dataset.tip = 'schedulePaused';
+    setHTML(el, segmentsHTML([_SCHEDULE_ICON, `<span class="text-warn-400">${sched.paused ? 'Testing paused' : 'Testing stopped'}</span>`]));
+    return;
+  }
+  el.dataset.tip = 'schedule';
   const parts = [[state.healthEnabled, 'health', state.healthInterval], [true, 'benchmark', state.benchmarkInterval], [state.auditEnabled, 'audit', state.auditInterval]]
     .filter(([enabled, type, interval]) => enabled && interval && testTypeLabel(type))
-    .map(([, type, interval]) => `<span>${esc(testTypeLabel(type))}: ${fmtSeconds(interval)}</span>`);
+    .map(([, type, interval]) => `<span>${esc(testTypeLabel(type))} every ${fmtSeconds(interval)}</span>`);
   setHTML(el, parts.length ? segmentsHTML([_SCHEDULE_ICON, segmentsHTML(parts, { sep: 'dot' })]) : '');
 }
 
@@ -503,16 +491,22 @@ function _deferProviderCards(providerSlug) {
   grid.innerHTML = deferredCardsHTML(cardCount);
 }
 
-const _STALE_THRESHOLD = 5 * 60 * 1000;
+// A provider's cards render from its card buckets: fetched now, unless every model has them
+// and they are younger than ui.provider_data_max_age (finding F89: the first load no longer
+// fetches every provider, so this is the path most providers take)
+function _providerReady(providerName) {
+  const models = state.models.filter(e => e.provider === providerName);
+  const dataAge = Date.now() - (state._providerDataAt[providerName] || 0);
+  return state._modelCaps && dataAge < state.ui.provider_data_max_age * 1000
+    && models.every(e => state.metrics[e.id]?.card_buckets !== undefined);
+}
 
 async function _fetchAndRenderProvider(providerName, providerSlug, contentEl) {
   if (_pendingFetches.has(providerName)) return;
   if (state.fetchedProviders.has(providerName)) return;
 
   const providerModels = state.models.filter(e => e.provider === providerName);
-  const hasMetrics = providerModels.some(e => state.metrics[e.id]?.status);
-  const dataAge = Date.now() - (state._providerDataAt[providerName] || 0);
-  if (hasMetrics && state._modelCaps && dataAge < _STALE_THRESHOLD) {
+  if (_providerReady(providerName)) {
     logDebug(logTag('DOM', '→', 'LazyRender', 'Provider', providerName));
     state.fetchedProviders.add(providerName);
     _renderProviderCards(providerSlug, contentEl);
@@ -523,18 +517,21 @@ async function _fetchAndRenderProvider(providerName, providerSlug, contentEl) {
 
   _pendingFetches.add(providerName);
   logDebug(logTag('DOM', '→', 'LazyFetch', 'Provider', providerName));
-  const fetches = [fetchProviderMetrics([providerName], { cardBuckets: true })];
-  if (!state._modelCaps) fetches.push(fetchModelInfoCapabilities());
-  const [metricsData, capsData] = await Promise.all(fetches);
-  _pendingFetches.delete(providerName);
-  if (capsData) mergeModelInfo(capsData);
-  if (!metricsData) return;
-  setMetrics(metricsData);
-  state.fetchedProviders.add(providerName);
-  state._providerDataAt[providerName] = Date.now();
-  _renderProviderCards(providerSlug, contentEl);
-  initPendingChartsInContainer(contentEl);
-  _scheduleUI({ models: Object.keys(metricsData), providers: true });
+  try {
+    const fetches = [fetchProviderMetrics([providerName], { cardBuckets: true })];
+    if (!state._modelCaps) fetches.push(fetchModelInfoCapabilities());
+    const [metricsData, capsData] = await Promise.all(fetches);
+    if (capsData) mergeModelInfo(capsData);
+    if (!metricsData) return;
+    setMetrics(metricsData);
+    state.fetchedProviders.add(providerName);
+    state._providerDataAt[providerName] = Date.now();
+    _renderProviderCards(providerSlug, contentEl);
+    initPendingChartsInContainer(contentEl);
+    _scheduleUI({ models: Object.keys(metricsData), providers: true });
+  } finally {
+    _pendingFetches.delete(providerName);
+  }
 }
 
 export function initScrollObserver() {
@@ -665,8 +662,8 @@ function renderChartViewPills() {
   const el = document.getElementById('chart-view-pills');
   if (!el) return;
   const current = getCardView();
-  el.innerHTML = CHART_VIEWS.map(v =>
-    `<button class="chart-view-pill${v.key === current ? ' active' : ''}" data-card-view="${v.key}" data-tip="${v.tip}" tabindex="0">${v.label}</button>`
+  el.innerHTML = chartViews().map(v =>
+    `<button type="button" class="chart-view-pill${v.key === current ? ' active' : ''}" data-card-view="${v.key}" data-tip="${v.tip}" aria-pressed="${v.key === current}">${esc(v.label)}</button>`
   ).join('');
   el.querySelectorAll('[data-card-view]').forEach(btn => {
     btn.addEventListener('click', e => {
@@ -677,40 +674,37 @@ function renderChartViewPills() {
   });
 }
 
+// The provider's name is the section heading (finding F74)
 function _providerSectionHTML(provider, entries, m, collapsed) {
   const providerSlug = slug(provider);
   const isCollapsed = collapsed.includes(providerSlug);
   const isFetched = state.fetchedProviders.has(provider);
   const isDeferred = isCollapsed || !isFetched;
-  const ps = state.providerSummaries[provider];
-  const counts = ps?.counts || { online: 0, degraded: 0, error: 0, testing: 0 };
-  const total = ps?.total ?? entries.filter(e => !e.archived).length;
   const gridContent = isDeferred
     ? deferredCardsHTML(entries.length)
     : entries.map(entry => buildCardDOM(entry, m[entry.id] || {})).join('');
   const gridAttr = isDeferred ? ` data-deferred="${entries.length}"` : '';
   const url = state.providerUrls[provider];
   return `
-  <div class="mb-2 provider-section rounded-xl" data-provider-slug="${providerSlug}" id="section-${providerSlug}">
-    <div class="provider-header" id="header-${providerSlug}" data-provider-slug="${providerSlug}">
-      <button class="provider-toggle" aria-expanded="${!isCollapsed}" aria-controls="content-${providerSlug}" aria-label="Toggle ${esc(provider)} models" tabindex="0">
+  <section class="mb-2 provider-section rounded-xl" data-provider-slug="${providerSlug}" id="section-${providerSlug}" aria-labelledby="header-${providerSlug}">
+    <div class="provider-header" data-provider-slug="${providerSlug}">
+      <button class="provider-toggle" aria-expanded="${!isCollapsed}" aria-controls="content-${providerSlug}" aria-label="Show or hide ${esc(provider)} models">
         ${chevronSVG('provider-chevron', 16)}
       </button>
-      ${providerName(provider, url, 'text-sm font-semibold text-text-secondary uppercase tracking-wider', state.providerLogos[provider], state.providerTitles[provider])}
-      ${providerCountBadges(counts, total, providerSlug, provider)}
+      <h2 class="provider-name" id="header-${providerSlug}">${providerName(provider, url, 'text-sm font-semibold text-text-secondary uppercase tracking-wider', state.providerLogos[provider], state.providerTitles[provider])}</h2>
+      <span id="phealth-${providerSlug}" class="ml-auto"></span>
     </div>
-    <div id="content-${providerSlug}" class="provider-content${isCollapsed ? ' collapsed' : ''}" role="region" aria-labelledby="header-${providerSlug}">
+    <div id="content-${providerSlug}" class="provider-content${isCollapsed ? ' collapsed' : ''}">
       <div class="provider-inner">
         <div class="model-grid grid gap-2.5 pt-2 pl-2 pr-1.5" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"${gridAttr}>
           ${gridContent}
         </div>
       </div>
     </div>
-  </div>`;
+  </section>`;
 }
 
 export function buildProviderSections() {
-  for (const key in _phealthCache) delete _phealthCache[key];
   for (const key in state.charts) {
     if (state.charts[key]) state.charts[key].destroy();
   }
@@ -731,6 +725,7 @@ export function buildProviderSections() {
     const entries = grouped[provider];
     return entries ? _providerSectionHTML(provider, entries, m, collapsed) : '';
   }).join('');
+  container.setAttribute('aria-busy', 'false');
 
   applyProviderCollapse();
 
@@ -741,37 +736,26 @@ export function buildProviderSections() {
     observeChart(`chart-${slug(entry.id)}`, entry.id);
   }
 
-  const skel = document.getElementById('skeleton');
-  if (skel) skel.remove();
   renderChartViewPills();
   applyFilter();
+  updateProviderCounts();
 }
 
-const _phealthCache = {};
-
-export function updateProviderCounts(changedModelId) {
-  const providers = changedModelId
-    ? [state._modelMap[changedModelId]?.provider].filter(Boolean)
-    : Object.keys(state.providerSummaries);
-  for (const provider of providers) {
-    const ps = state.providerSummaries[provider];
-    if (!ps) continue;
-    const counts = ps.counts || { online: 0, degraded: 0, error: 0, testing: 0 };
-    const providerSlug = slug(provider);
-    const html = providerCountBadges(counts, ps.total || 0, providerSlug, provider);
-    if (!html) { const el = document.getElementById(`phealth-${providerSlug}`); el?.remove(); delete _phealthCache[providerSlug]; continue; }
-    if (html !== _phealthCache[providerSlug]) {
-      _phealthCache[providerSlug] = html;
-      const el = document.getElementById(`phealth-${providerSlug}`);
-      if (el) {
-        const tmp = document.createElement('span');
-        tmp.innerHTML = html;
-        const replacement = tmp.firstElementChild;
-        if (replacement) el.replaceWith(replacement);
-      }
-    }
+// Header scores and counts of every provider (counts follow the filter, see providerCounts)
+export function updateProviderCounts() {
+  for (const provider of state.providerOrder) {
+    const el = document.getElementById(`phealth-${slug(provider)}`);
+    if (!el) continue;
+    const html = providerCountBadges(provider);
+    if (!html) { el.replaceChildren(); continue; }
+    const tmp = document.createElement('span');
+    tmp.innerHTML = html;
+    const next = tmp.firstElementChild;
+    if (next && next.outerHTML !== el.outerHTML) el.replaceWith(next);
   }
 }
+
+onFilterApplied(updateProviderCounts);
 
 const _BASE_MODEL_KEYS = new Set(['id', 'provider', 'model_id', 'name', 'hf_id', 'api_url']);
 // Delivered by /api/providers on every fetch - absence means "not set", so never carry stale values forward
@@ -830,8 +814,6 @@ export async function refreshModelList({ rebuild = true } = {}) {
   applyProvidersData(providers);
   if (caps) mergeModelInfo(caps);
   if (rebuild) buildProviderSections();
-  const warnEl = document.getElementById('config-warning');
-  if (warnEl) warnEl.classList.add('hidden');
   return providers;
   } catch (e) { logError(logTag('DOM', '←', 'Error', 'ModelList'), e); return null; }
 }

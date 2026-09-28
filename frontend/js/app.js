@@ -2,27 +2,22 @@
 // instantly on revisit (Phase 1), then fresh data overwrites (Phase 2).
 // initNotifSystem MUST run before connectWS so prefs load before the WS
 // hello sync - otherwise the server filters out all notifications.
-import { state, setMetrics, applyConfig, LS } from './state.js';
-import { logError, logInfo, logTag, reportClientError, stripEphemeral } from './utils.js';
+import { state, setMetrics, BOOT, LS } from './state.js';
+import { logError, logInfo, logDebug, logTag, reportClientError, stripEphemeral, closeTopLayer, pruneStorage, slug } from './utils.js';
 import { api, fetchLive, probeBackend, fetchProviderMetrics, fetchProviders, fetchModelInfoCapabilities } from './api.js';
 import { initTooltips } from './tooltips.js';
-import { _resizeCharts, invalidateBucketCache, _fetchMetaClear } from './chart.js';
-import { renderSchedule, toggleProvider, toggleAllProviders, initScrollObserver, applyProvidersData, modelKeys, buildProviderSections, setScheduleUI, mergeModelInfo } from './dom.js';
+import { _resizeCharts, _fetchMetaClear } from './chart.js';
+import { toggleProvider, toggleAllProviders, initScrollObserver, applyProvidersData, modelKeys, buildProviderSections, setScheduleUI, mergeModelInfo } from './dom.js';
 import { openModal, closeModal } from './modal-loader.js';
-import { closeNotifPanel, initNotifSystem, initPush, setCloseHelpPanel, syncNotifSettingsUI } from './notifications.js';
+import { closeNotifPanel, initNotifSystem, initPush, setCloseHelpPanel } from './notifications.js';
 import { buildNotifPrefs } from './prefs.js';
-import { closeHelpPanel, initHelpPanel, isHelpPanelOpen, setCloseNotifPanel, renderHelpLegends } from './help.js';
-import { connectWS, refreshCardBuckets } from './ws.js';
+import { closeHelpPanel, initHelpPanel, setCloseNotifPanel } from './help.js';
+import { connectWS, applyConfigAndRender } from './ws.js';
+import { setWSStatus, onConnChange } from './conn.js';
 import { initTheme } from './theme.js';
 import { scheduleUI } from './frame.js';
 import { cacheGet, cacheSet } from './cache.js';
 import { initFilter } from './filter.js';
-
-function _applyCfg(cfg) {
-  applyConfig(cfg);
-  if (cfg.color_thresholds) { renderHelpLegends(); syncNotifSettingsUI(); }
-  renderSchedule();
-}
 
 window.onerror = (msg, src, line, col, err) => { logError(logTag('App', 'Err'), err || new Error(msg)); reportClientError({ message: String(msg), source: src || '', line, col, stack: err?.stack || '', type: 'error', url: location.href, ua: navigator.userAgent }); return true; };
 window.addEventListener('unhandledrejection', e => { e.preventDefault(); const r = e.reason; logError(logTag('App', 'Rej'), r); reportClientError({ message: String(r?.message || r), stack: r?.stack || '', type: 'rejection', url: location.href, ua: navigator.userAgent }); });
@@ -31,25 +26,22 @@ let _resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(_resizeTimer);
   _resizeTimer = setTimeout(() => {
-    invalidateBucketCache();
     _fetchMetaClear();
     _resizeCharts();
   }, 150);
 });
 
+// The one Escape handler: it closes the top overlay only (finding F49: three listeners closed
+// the modal from inside the date picker). A field that used Escape itself prevents the default.
 document.addEventListener('keydown', e => {
-  if (e.key !== 'Escape') return;
-  if (isHelpPanelOpen()) { closeHelpPanel(); return; }
-  const panel = document.getElementById('notif-panel');
-  if (panel && panel.classList.contains('open')) { closeNotifPanel(); return; }
-  closeModal();
+  if (e.key !== 'Escape' || e.defaultPrevented) return;
+  if (closeTopLayer()) e.preventDefault();
 });
 
 document.addEventListener('click', e => {
   const modal = document.getElementById('modal');
   if (e.target === modal) closeModal();
-  const closeBtn = document.getElementById('modal-close');
-  if (e.target === closeBtn) closeModal();
+  if (e.target.closest('#modal-close')) closeModal();
 
   const toggleAll = e.target.closest('[data-action]');
   if (toggleAll) {
@@ -65,19 +57,12 @@ document.addEventListener('click', e => {
     return;
   }
 
+  // A click anywhere on a card opens it; keyboard users have the card's title button (F74)
   const card = e.target.closest('[data-model-key]');
   if (card) {
     if (e.target.closest('.provider-link')) return;
     openModal(card.dataset.modelKey);
   }
-});
-
-document.addEventListener('keydown', e => {
-  if (e.key !== 'Enter' && e.key !== ' ') return;
-  const card = e.target.closest('[data-model-key]');
-  if (!card) return;
-  e.preventDefault();
-  openModal(card.dataset.modelKey);
 });
 
 document.addEventListener('animationend', e => { if (e.animationName === 'fade-in') e.target.classList.remove('fade-in-once', 'fade-in'); });
@@ -97,33 +82,52 @@ function _measureClientRTT() {
   _measureClientRTTFresh();
 }
 
+// A liveness probe that fails is expected while the server is down: debug, not error (F34)
 function _measureClientRTTFresh() {
   const t0 = performance.now();
   fetchLive()
     .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); const ms = Math.round(performance.now() - t0); if (ms > 1) state.clientRTT = Math.round(ms / 2); })
-    .catch(e => logError(logTag('App', '←', 'Error', 'RTT'), e));
+    .catch(e => logDebug(logTag('App', '←', 'RTT', 'Unavailable', e?.message)));
 }
 
 // While the server looks unreachable, probe liveness every unreachable.retry_interval (read per
 // round, so a config change applies); a timeout chain instead of setInterval for that reason.
+// The next round is armed in finally, so a failing recovery step cannot end the loop (F33).
 function _probeWhileDown() {
   setTimeout(() => {
     if (!state._backendDown) { _probeWhileDown(); return; }
     probeBackend().then(up => {
-      if (up) {
-        logInfo(logTag('App', '←', 'Recovered', 'Backend up'));
-        connectWS();
-        fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders] }).then(m => { if (m) { setMetrics(m); scheduleUI({ models: Object.keys(m), summary: true, providers: true }); } }).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryMetrics'), e));
-        api('/api/config').then(c => _applyCfg(c)).catch(e => logError(logTag('App', '\u2190', 'Error', 'RecoveryConfig'), e));
-      }
-      _probeWhileDown();
-    });
+      if (!up) return;
+      logInfo(logTag('App', '←', 'Recovered', 'Backend up'));
+      connectWS();
+      if (!_loaded) { loadDashboard().catch(e => logError(logTag('App', '←', 'Error', 'RecoveryLoad'), e)); return; }
+      fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders] }).then(m => { if (m) { setMetrics(m); scheduleUI({ models: Object.keys(m), summary: true, providers: true }); } }).catch(e => logError(logTag('App', '←', 'Error', 'RecoveryMetrics'), e));
+      api('/api/config').then(c => { if (c) applyConfigAndRender(c); }).catch(e => logError(logTag('App', '←', 'Error', 'RecoveryConfig'), e));
+    }).catch(e => logError(logTag('App', '←', 'Error', 'Probe'), e))
+      .finally(_probeWhileDown);
   }, state.conn.unreachable.retry_interval * 1000);
 }
 
+// ── Main area states (finding F68): placeholders until the first data, an error with a retry
+// when it cannot load. #skeleton holds the placeholders; buildProviderSections replaces them.
+let _loaded = false;
 
+function _renderLoadState() {
+  const err = document.getElementById('load-error');
+  if (!err) return;
+  err.hidden = _loaded || !state._backendDown;
+  const skel = document.getElementById('skeleton');
+  if (skel) skel.hidden = !err.hidden;
+}
 
-
+function _showLoadFailure(message) {
+  const err = document.getElementById('load-error');
+  if (!err) return;
+  err.querySelector('.load-error-detail').textContent = message;
+  err.hidden = false;
+  const skel = document.getElementById('skeleton');
+  if (skel) skel.hidden = true;
+}
 
 if ('serviceWorker' in navigator) {
   let _swRefreshing = false;
@@ -144,109 +148,129 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-async function init() {
-  logInfo(logTag('App', '→', 'Init', 'Loading'));
-  setScheduleUI(scheduleUI);
-  initTooltips();
-  initTheme();
-  initNotifSystem();
-  connectWS();
+// Fresh card data: the scroll observer renders these providers without fetching again
+function _markFresh(providers) {
+  const now = Date.now();
+  for (const p of providers) state._providerDataAt[p] = now;
+}
 
-  try { state.collapsedProviders = JSON.parse(localStorage.getItem(LS.COLLAPSED) || '[]'); } catch (e) { logError(logTag('App', '←', 'Error', 'CollapsedState'), e); state.collapsedProviders = []; }
-  localStorage.removeItem('mw_show_archived'); // setting removed; cleanup stale key
+// The providers the first load renders cards for: the first ui.eager_providers that are not
+// collapsed. The rest render when they scroll near the viewport (finding F89: every provider's
+// cards and charts used to be built up front).
+function _eagerProviders() {
+  return state.providerOrder.filter(p => !state.collapsedProviders.includes(slug(p)))
+    .slice(0, state.ui.eager_providers);
+}
 
-  // Phase 1: render from cache (instant on revisit)
-  const [cachedProviders, cachedConfig, cachedMetrics, cachedCaps] = await Promise.all([
-    cacheGet('providers_full'), cacheGet('config'), cacheGet('metrics_initial'), cacheGet('model_info_caps'),
-  ]);
-  let renderedFromCache = false;
-  if (cachedConfig) { _applyCfg(cachedConfig); }
-  if (cachedProviders) {
-    applyProvidersData(cachedProviders);
-    if (cachedCaps) mergeModelInfo(cachedCaps);
-    if (cachedMetrics) {
-      setMetrics(cachedMetrics);
-      for (const p of state.providerOrder) state.fetchedProviders.add(p);
-    }
-    buildProviderSections();
-    if (cachedMetrics) {
-      scheduleUI({ models: Object.keys(cachedMetrics), summary: true, providers: true });
-    }
-    renderedFromCache = true;
-    initFilter();
-    logInfo(logTag('App', '←', 'Cache', 'Rendered', `${Object.keys(cachedMetrics || {}).length} models`));
-  }
-
-  // Phase 2: fetch fresh data (parallel) - providers + model capabilities
+// Phase 2: fresh config, model list and data. Also the retry of a failed first load.
+async function loadDashboard() {
   const [cfg, providersData, capsData] = await Promise.all([
     api('/api/config'),
     fetchProviders(null),
     fetchModelInfoCapabilities(),
   ]);
-  if (cfg) { cacheSet('config', cfg, 3600); _applyCfg(cfg); }
+  if (cfg) { cacheSet('config', cfg, state.ui.cache_ttl.config); applyConfigAndRender(cfg); }
   if (providersData) {
     applyProvidersData(providersData);
-    cacheSet('providers_full', providersData, 3600);
+    cacheSet('providers_full', providersData, state.ui.cache_ttl.providers);
   }
   if (capsData) {
     mergeModelInfo(capsData);
-    cacheSet('model_info_caps', capsData, 3600);
+    cacheSet('model_info_caps', capsData, state.ui.cache_ttl.model_info);
+  }
+  if (!state.providerOrder.length) {
+    if (!_loaded) _showLoadFailure(state._backendDown ? 'The server is unreachable.' : 'The server sent no model list.');
+    return;
   }
 
-  // Fire deploy-version check in background - not on critical path
   api('/api/deploy-version').then(d => {
     if (d?.version) state._deployVersion = d.version;
   }).catch(e => logError(logTag('App', '←', 'Error', 'DeployVersion'), e));
 
-  const prevKeys = renderedFromCache ? modelKeys() : null;
-
-  const metricsData = await fetchProviderMetrics(state.providerOrder, { cardBuckets: true });
-  if (metricsData) {
-    cacheSet('metrics_initial', stripEphemeral(metricsData), 300);
-    setMetrics(metricsData);
-    const now = Date.now();
-    for (const p of state.providerOrder) {
-      state._providerDataAt[p] = now;
-      state.fetchedProviders.add(p);
-    }
+  const prevKeys = _loaded ? modelKeys() : null;
+  // Statuses and scores of every model (the filter and the counts need them), card buckets only
+  // for the eager providers
+  const eager = _eagerProviders();
+  const [summaries, eagerData] = await Promise.all([
+    fetchProviderMetrics(state.providerOrder),
+    fetchProviderMetrics(eager, { cardBuckets: true }),
+  ]);
+  for (const m of [summaries, eagerData]) if (m) setMetrics(m);
+  if (eagerData) {
+    cacheSet('metrics_initial', stripEphemeral(state.metrics), state.ui.cache_ttl.metrics);
+    _markFresh(eager);
+  }
+  if (!summaries && !eagerData && !_loaded) {
+    _showLoadFailure('The dashboard data did not load.');
+    return;
   }
 
-  // Build sections AFTER data is available - renders real cards directly, no skeleton→real CLS
-  // Also rebuild if previously rendered without metrics (partial cache)
-  const needRebuild = !renderedFromCache || !cachedMetrics;
-  if (prevKeys) {
-    const newKeys = modelKeys();
-    let changed = newKeys.size !== prevKeys.size;
-    if (!changed) for (const k of newKeys) { if (!prevKeys.has(k)) { changed = true; break; } }
-    if (changed || needRebuild) buildProviderSections();
-  } else {
-    buildProviderSections();
-  }
+  const changed = !prevKeys || prevKeys.size !== state.models.length || state.models.some(m => !prevKeys.has(m.id));
+  if (changed || !_loaded) buildProviderSections();
+  _loaded = true;
+  _renderLoadState();
   initFilter();
+  scheduleUI({ models: Object.keys(state.metrics), summary: true, providers: true });
+  initScrollObserver();
+}
 
-  if (metricsData) {
-    scheduleUI({ models: Object.keys(metricsData), summary: true, providers: true });
+async function init() {
+  // One check of the page bootstrap; without it nothing below can work (finding F32)
+  if (!BOOT) {
+    logError(logTag('App', '→', 'Error', 'Bootstrap'), new Error('window.__MW_BOOT__ missing from the page: the page and the server are out of step'));
+    setWSStatus('unconfigured');
+    _showLoadFailure('This page came without its settings from the server. Reload the page.');
+    return;
+  }
+  logInfo(logTag('App', '→', 'Init', 'Loading'));
+  const stale = pruneStorage(localStorage, LS, BOOT.storage_prefix);
+  if (stale.length) logInfo(logTag('App', '→', 'Storage', 'Removed', stale.join(',')));
+  setScheduleUI(scheduleUI);
+  initTooltips();
+  initTheme();
+  initNotifSystem();
+  onConnChange(_renderLoadState);
+  connectWS();
+
+  try { state.collapsedProviders = JSON.parse(localStorage.getItem(LS.COLLAPSED) || '[]'); } catch (e) { logError(logTag('App', '←', 'Error', 'CollapsedState'), e); state.collapsedProviders = []; }
+
+  // Phase 1: render from cache (instant on revisit)
+  const [cachedProviders, cachedConfig, cachedMetrics, cachedCaps] = await Promise.all([
+    cacheGet('providers_full'), cacheGet('config'), cacheGet('metrics_initial'), cacheGet('model_info_caps'),
+  ]);
+  if (cachedConfig) applyConfigAndRender(cachedConfig);
+  if (cachedProviders) {
+    applyProvidersData(cachedProviders);
+    if (cachedCaps) mergeModelInfo(cachedCaps);
+    if (cachedMetrics) setMetrics(cachedMetrics);
+    buildProviderSections();
+    if (cachedMetrics) scheduleUI({ models: Object.keys(cachedMetrics), summary: true, providers: true });
+    _loaded = true;
+    _renderLoadState();
+    initFilter();
+    logInfo(logTag('App', '←', 'Cache', 'Rendered', `${Object.keys(cachedMetrics || {}).length} models`));
   }
 
-  _measureClientRTT();
-  initScrollObserver();
+  document.getElementById('load-retry')?.addEventListener('click', () => {
+    loadDashboard().catch(e => logError(logTag('App', '←', 'Error', 'Retry'), e));
+  });
 
-  setInterval(() => scheduleUI({ checkLines: true }), 30000);
+  await loadDashboard();
+  _measureClientRTT();
+
+  const ui = state.ui;
+  setInterval(() => scheduleUI({ checkLines: true }), ui.check_line_refresh * 1000);
 
   setInterval(() => {
-    if (state._wsConnected) return;
-    const toFetch = state.providerOrder;
-    fetchProviderMetrics(toFetch, { detailProviders: [...state.fetchedProviders] }).then(metrics => {
+    if (state._wsConnected || !_loaded) return;
+    fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders] }).then(metrics => {
       if (!metrics) return;
-      cacheSet('metrics_initial', stripEphemeral(metrics), 300);
       setMetrics(metrics);
       const now = Date.now();
       for (const p of state.providerOrder) { state._providerDataAt[p] = now; }
       scheduleUI({ models: Object.keys(metrics), summary: true, providers: true });
     }).catch(e => logError(logTag('App', '←', 'Error', 'MetricsPoll'), e));
-  }, 30000);
-
-  setInterval(() => refreshCardBuckets(), 5 * 60 * 1000);
+  }, ui.metrics_poll * 1000);
 
   setInterval(() => {
     api('/api/deploy-version').then(d => {
@@ -258,7 +282,7 @@ async function init() {
       }
       state._deployVersion = d.version;
     }).catch(e => logError(logTag('App', '←', 'Error', 'VersionPoll'), e));
-  }, 60000);
+  }, ui.deploy_poll * 1000);
 
   // Defer non-critical UI initialization until browser is idle
   // initNotifSystem MUST run before connectWS (loads prefs before WS sync)

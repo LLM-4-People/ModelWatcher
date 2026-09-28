@@ -111,7 +111,8 @@ def test_same_origin_page_is_accepted_with_placeholder_allowlist(ws_config):
     with TestClient(_app()) as client:
         with client.websocket_connect(st.WS_PATH, headers={"origin": SAME_ORIGIN}) as ws:
             hello = ws.receive_json()
-    assert hello == {"type": "hello", "config": json.loads(json.dumps(connection_config()))}
+    assert hello == {"type": "hello", "config": json.loads(json.dumps(connection_config())),
+                     "scheduler": json.loads(json.dumps(st.scheduler_state()))}
 
 
 @pytest.mark.parametrize("origin, allowlist, expected", [
@@ -241,7 +242,7 @@ def test_real_app_with_tests_disabled(run_python, example_config_env, tmp_path):
         "           'test_tasks': list(_OUTBOUND_TASKS)}\n"
         "    page = client.get('/').text\n"
         "    out['preloads'] = re.findall(r'rel=\"modulepreload\" href=\"[^\"]*?/(js/[^\"?]+)', page)\n"
-        "    out['boot'] = json.loads(page.split('window.__MW_CONN__=', 1)[1].split('</script>', 1)[0])\n"
+        "    out['boot'] = json.loads(page.split('window.__MW_BOOT__=', 1)[1].split('</script>', 1)[0])['conn']\n"
         f"    with client.websocket_connect('ws://localhost' + st.WS_PATH, headers={{'origin': {LOCAL_ORIGIN!r}}}) as ws:\n"
         f"        out['frames'] = receive_until(ws, lambda f: len(f) >= 3, {FRAMES_DEADLINE_S})\n"
         "emit(out)\n"

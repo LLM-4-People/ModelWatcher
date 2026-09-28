@@ -65,6 +65,8 @@ testing:
     # budget_tokens must be < max_tokens, hence min(target-1, budget).
     # Set to null to disable Anthropic extended thinking entirely (param omitted).
     anthropic_thinking_budget: 3200
+    # A benchmark counts as degraded when at least this many of its metrics sit in the Critical tier
+    degraded_critical_metrics: 2
     # tiktoken encoding used to count streamed tokens: cross-validates provider-reported
     # completion_tokens and normalizes ITL when a provider batches several tokens per chunk.
     # Loaded in the background on first use and cached under data/tiktoken (TIKTOKEN_CACHE_DIR),
@@ -111,12 +113,35 @@ metrics:
   recent_history: 2d
   # Minimum data points needed to compute composite scores
   min_data_points_score: 3
-  # Minimum data points per half for trend computation
-  min_data_points_trend: 2
+  # Trends compare the median of the last trend_window against the median of everything before
+  # it (duration, e.g. 12h); a window with fewer than min_data_points_trend results has no trend
+  trend_window: 12h
+  min_data_points_trend: 4
+  # Smallest change that counts as improving or degrading, per metric in its own unit
+  # (t/s, ms, count, x, score points, percentage points of availability)
+  trend_deadbands:
+    tps: 5.0
+    ttft_ms: 500
+    stall_count: 1
+    raw_p99_itl_ms: 20
+    effective_itl_tail_ratio: 0.5
+    chunk_token_ratio: 0.5
+    consistency_score: 5
+    speed_score: 5
+    available: 5
+    reliability_score: 5
   # Maximum rows returned by history queries (modal charts, history tables)
   history_query_limit: 2000
-  # How often (seconds) to re-fetch provider page titles/logos
+  # Chart requests may ask for at most this many buckets per series
+  max_chart_buckets: 500
+  # Background fetches of provider pages (title and logo) and model info: how often (seconds) to
+  # re-fetch provider pages, the HTTP timeout (seconds, connect timeout is
+  # server.http_connect_timeout), how many run at once and the largest page or logo kept (bytes)
   provider_fetch_ttl: 86400
+  fetch_timeout: 15
+  provider_fetch_concurrency: 2
+  model_info_fetch_concurrency: 6
+  provider_fetch_max_bytes: 500000
   # How often (seconds) to run DB cleanup: delete old results and orphaned provider/model rows
   cleanup_interval: 3600
   # How often (seconds) to flush buffered SQLite writes and WS broadcasts
@@ -179,13 +204,56 @@ websocket:
   ping_interval: 30
   ping_timeout: 90
 
+# Browser settings: the page gets them in its bootstrap (window.__MW_BOOT__) and again from
+# /api/config after a config reload
+ui:
+  # Seconds between refreshes of the check-line ages in an open model modal
+  check_line_refresh: 30
+  # While the live socket is down, refetch the dashboard data every N seconds
+  metrics_poll: 30
+  # Check /api/deploy-version every N seconds and reload the page when the frontend changed
+  deploy_poll: 60
+  # A provider's card data older than this many seconds is refetched when it scrolls back into view
+  provider_data_max_age: 300
+  # Providers whose cards the first page load renders; the rest load as they scroll into view
+  eager_providers: 3
+  # Card charts: at most one redraw per model per chart_update_interval seconds; a chart that
+  # stays off screen for chart_offscreen_destroy seconds is freed (checked every chart_cleanup_interval)
+  chart_update_interval: 5
+  chart_offscreen_destroy: 120
+  chart_cleanup_interval: 60
+  # Upper bound for the chart canvas pixel ratio: 1 renders blurry on high-DPI screens, higher
+  # values cost memory per chart (the screen's own ratio is used when it is lower)
+  chart_max_pixel_ratio: 2
+  # Check ages turn "Aging" above aging_ratio x the check interval and "Stale" above stale_ratio x
+  freshness:
+    aging_ratio: 1.5
+    stale_ratio: 3.0
+  # Seconds the browser cache (IndexedDB) keeps each item before the page refetches it
+  cache_ttl:
+    config: 3600
+    providers: 3600
+    model_info: 3600
+    metrics: 300
+    vapid_key: 86400
+  # Time range the modal opens with (a time_ranges key), per chart and history table, on wide
+  # screens and on phones (below 640 px)
+  default_ranges:
+    chart: { desktop: "7d", phone: "24h" }
+    history: { desktop: "3d", phone: "4h" }
+
 # Notification settings
 notifications:
   enabled: true             # true/false - master toggle for all notification delivery (push, webhook, in-app)
   # HTTP timeout for webhook delivery (seconds)
   webhook_timeout: 10
-  # Push notification TTL (seconds)
+  # Push notification TTL (seconds) and HTTP timeout for delivering one push message (seconds)
   push_ttl: 86400
+  push_timeout: 30
+  # Seconds before the same model may notify again: status changes (offline, recovered, degraded)
+  # and the first TPS/TTFT degradation (further drops and recoveries always notify)
+  status_cooldown: 120
+  metric_cooldown: 300
   # Which events trigger notifications
   events:
     offline: true          # Model goes down
@@ -297,6 +365,10 @@ color_thresholds:
     # <5%: Excellent (negligible impact), 5-15%: Good (minor noise), 15-30%: OK (noticeable),
     # 30-50%: Bad (p99 unreliable), ≥50%: Critical (median is measurement artifact)
     thresholds: [5, 15, 30, 50, 0]
+  scores:
+    higher_is_better: true
+    # Composite scores (0-100): >=80: Excellent, >=60: Good, >=40: OK, >=20: Bad, else: Critical
+    thresholds: [80, 60, 40, 20, 0]
   chunk_token_cv:
     higher_is_better: false
     # Coefficient of variation of per-chunk token counts (stdev/mean).
@@ -314,7 +386,8 @@ scores:
   # Speed: measures raw throughput and time-to-first-token
   speed:
     weights: { ttft_ms: 0.50, tps: 0.50 }
-  # Reliability: combines uptime (availability) with quality (consistency + speed scores)
+  # Reliability: uptime (availability) scaled by quality, the share of recent benchmarks that were
+  # not degraded: availability_score x (availability_weight + quality_weight x quality)
   reliability:
     availability_weight: 0.75
     quality_weight: 0.25

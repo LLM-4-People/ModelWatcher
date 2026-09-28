@@ -3,22 +3,26 @@
 // primitive `let` exports use setter functions (e.g. setChartReady).
 import { _EPHEMERAL } from './utils.js';
 
-export const LS = {
-  CLIENT_ID: 'mw_client_id',
-  COLLAPSED: 'mw_collapsed',
-  THEME: 'mw_theme',
-  NOTIF_SETTINGS: 'mw_notif_settings',
-  NOTIF_HISTORY: 'mw_notif_history',
-  NOTIF_READ_IDS: 'mw_notif_read_ids',
-  NOTIF_ENABLED_AT: 'mw_notif_enabled_at',
-  NOTIF_LOCAL: 'mw_notif_local',
-  NOTIF_ENABLED_ONCE: 'mw_notif_enabled_once',
-  SW_CLEANUP: 'mw_sw_cleanup_done',
-  PUSH_OPT_OUT: 'mw_push_opt_out',
-  CHART_RANGE: 'mw_chart_range',
-  CARD_VIEW: 'mw_card_view',
-  ACC_COLLAPSED: 'mw_acc_collapsed',
-};
+// The page bootstrap (backend/routes.py page_bootstrap, window.__MW_BOOT__): static prefix, app
+// name, log level, connection policy, storage keys, model key separator and browser settings.
+// app.js stops at start when it is missing (finding F32), so nothing below runs without it.
+export const BOOT = globalThis.__MW_BOOT__ ?? null;
+
+// Every localStorage key, from backend/state.py STORAGE_KEYS (finding F19)
+export const LS = BOOT?.storage_keys;
+
+// Model keys join provider and model id with backend/state.py MODEL_KEY_SEP (finding F45)
+export function makeModelKey(provider, model) { return `${provider}${BOOT.model_key_sep}${model}`; }
+
+export function parseModelKey(mk) {
+  const sep = BOOT.model_key_sep;
+  const idx = mk.indexOf(sep);
+  if (idx < 0) return { provider: '', model: mk };
+  return { provider: mk.slice(0, idx), model: mk.slice(idx + sep.length) };
+}
+
+// A provider-level key (provider added or removed) names no model
+export function isProviderKey(mk) { return parseModelKey(mk).model === ''; }
 
 export const state = {
   models: [],
@@ -30,7 +34,9 @@ export const state = {
   timeRanges: [],
   clientRTT: null,
   // Connection policy from the page bootstrap, refreshed by every WS hello (backend/websocket.py)
-  conn: globalThis.__MW_CONN__ ?? null,
+  conn: BOOT?.conn ?? null,
+  // Browser settings (app.yaml ui.*) from the page bootstrap, refreshed by /api/config
+  ui: BOOT?.ui ?? null,
   // Config-derived values stay null until /api/config arrives: views render an unknown state
   // instead of guessing (a guessed interval colored freshness wrongly, finding F6)
   healthInterval: null,
@@ -41,13 +47,21 @@ export const state = {
   probeEnabled: null,
   probeInterval: null,
   benchmarkInterval: null,
+  // Labels and rules from /api/config (backend/state.py); empty until it arrives, never guessed (F22)
   colorThresholds: {},
   eventLabels: {},
   metricLabels: {},
+  metricShortLabels: {},
   testTypeLabels: {},
-  statusValues: ['online', 'degraded', 'error', 'unknown'],
-  testTypes: ['benchmark', 'health', 'audit', 'probe'],
-  chartViews: ['speed', 'consistency', 'scores', 'health'],
+  statusLabels: {},
+  chartViewLabels: {},
+  statusValues: [],
+  chartViews: [],
+  capabilities: [],
+  scheduler: null,
+  degradedCriticalMetrics: null,
+  stalls: null,
+  scoreWeights: null,
   _lastWsMsg: 0,
   _modelMap: {},
   _deployVersion: null,
@@ -83,13 +97,11 @@ export const state = {
   _suppressDeployReload: false,
   providerSummaries: {},
   _chartColorsDirty: true,
-  _counts: { online: 0, degraded: 0, error: 0, testing: 0 },
+  _counts: { online: 0, degraded: 0, error: 0, unknown: 0, testing: 0 },
   fetchedProviders: new Set(),
   _providerDataAt: {},
   _modelCaps: null,
 };
-
-export const CC = { tps: '#06b6d4', ttft: '#8b5cf6', uptime: '#f97316', tails: '#ec4899', batching: '#14b8a6', scoreC: '#14b8a6', scoreS: '#3b82f6', scoreR: '#22c55e' };
 
 export const _NOTIF_OPTS = [
   { key: 'enabled', label: 'Enable notifications', desc: 'Receive alerts when models go offline, recover, or degrade.', help: 'Enable notifications to receive alerts when models go offline, recover, or degrade.', master: true, onFirstEnable: ['offline', 'recovered_offline', 'recovered_degraded', 'degraded', 'degraded_tps', 'degraded_ttft', 'recovered_tps', 'recovered_ttft', 'provider_changed', 'model_changed'] },
@@ -157,8 +169,8 @@ export function setMetrics(metrics) {
   recalcCounts();
 }
 
-function countByStatus(entries, metrics) {
-  let online = 0, degraded = 0, error = 0, testing = 0;
+export function countByStatus(entries, metrics) {
+  let online = 0, degraded = 0, error = 0, unknown = 0, testing = 0;
   for (const e of entries) {
     if (e.archived) continue;
     const m = metrics[e.id];
@@ -169,8 +181,9 @@ function countByStatus(entries, metrics) {
     else if (s === 'online') online++;
     else if (s === 'degraded') degraded++;
     else if (s === 'error') error++;
+    else unknown++;
   }
-  return { online, degraded, error, testing };
+  return { online, degraded, error, unknown, testing };
 }
 
 export function recalcCounts() {
@@ -186,36 +199,20 @@ export function recalcCounts() {
   }
 }
 
-export function adjustCount(modelId, prevStatus, nextStatus, prevTesting, nextTesting) {
-  const c = state._counts;
+// Move one model between status counts (page-wide and its provider's) and in or out of testing
+function _moveCount(counts, prevStatus, nextStatus, testingDelta) {
   if (prevStatus !== nextStatus) {
-    if (prevStatus === 'online') c.online = Math.max(0, c.online - 1);
-    else if (prevStatus === 'degraded') c.degraded = Math.max(0, c.degraded - 1);
-    else if (prevStatus === 'error') c.error = Math.max(0, c.error - 1);
-    if (nextStatus === 'online') c.online++;
-    else if (nextStatus === 'degraded') c.degraded++;
-    else if (nextStatus === 'error') c.error++;
-    const provider = modelId.split('::')[0];
-    const pc = state.providerSummaries[provider]?.counts;
-    if (pc) {
-      if (prevStatus === 'online') pc.online = Math.max(0, pc.online - 1);
-      else if (prevStatus === 'degraded') pc.degraded = Math.max(0, pc.degraded - 1);
-      else if (prevStatus === 'error') pc.error = Math.max(0, pc.error - 1);
-      if (nextStatus === 'online') pc.online++;
-      else if (nextStatus === 'degraded') pc.degraded++;
-      else if (nextStatus === 'error') pc.error++;
-    }
+    if (prevStatus in counts) counts[prevStatus] = Math.max(0, counts[prevStatus] - 1);
+    if (nextStatus in counts) counts[nextStatus]++;
   }
-  const wasTesting = !!prevTesting;
-  const isTesting = !!nextTesting;
-  if (wasTesting !== isTesting) {
-    c.testing = Math.max(0, c.testing + (isTesting ? 1 : -1));
-    const provider = modelId.split('::')[0];
-    const pc = state.providerSummaries[provider]?.counts;
-    if (pc) {
-      pc.testing = Math.max(0, (pc.testing || 0) + (isTesting ? 1 : -1));
-    }
-  }
+  if (testingDelta) counts.testing = Math.max(0, (counts.testing || 0) + testingDelta);
+}
+
+export function adjustCount(modelId, prevStatus, nextStatus, prevTesting, nextTesting) {
+  const testingDelta = !!nextTesting - !!prevTesting;
+  _moveCount(state._counts, prevStatus, nextStatus, testingDelta);
+  const pc = state.providerSummaries[parseModelKey(modelId).provider]?.counts;
+  if (pc) _moveCount(pc, prevStatus, nextStatus, testingDelta);
 }
 export let _chartReady = null;
 
@@ -226,10 +223,18 @@ export function applyConfig(cfg) {
   if (cfg.color_thresholds) state.colorThresholds = cfg.color_thresholds;
   if (cfg.event_labels) state.eventLabels = cfg.event_labels;
   if (cfg.metric_labels) state.metricLabels = cfg.metric_labels;
+  if (cfg.metric_short_labels) state.metricShortLabels = cfg.metric_short_labels;
   if (cfg.test_type_labels) state.testTypeLabels = cfg.test_type_labels;
   if (cfg.status_values) state.statusValues = cfg.status_values;
-  if (cfg.test_types) state.testTypes = cfg.test_types;
+  if (cfg.status_labels) state.statusLabels = cfg.status_labels;
   if (cfg.chart_views) state.chartViews = cfg.chart_views;
+  if (cfg.chart_view_labels) state.chartViewLabels = cfg.chart_view_labels;
+  if (cfg.capabilities) state.capabilities = cfg.capabilities;
+  if (cfg.scheduler) state.scheduler = cfg.scheduler;
+  if (cfg.degraded_critical_metrics != null) state.degradedCriticalMetrics = cfg.degraded_critical_metrics;
+  if (cfg.stalls) state.stalls = cfg.stalls;
+  if (cfg.scores) state.scoreWeights = cfg.scores;
+  if (cfg.ui) state.ui = cfg.ui;
   if (cfg.benchmark_interval_seconds != null) state.benchmarkInterval = cfg.benchmark_interval_seconds;
   if (cfg.health_interval_seconds != null) state.healthInterval = cfg.health_interval_seconds;
   if (cfg.health_enabled != null) state.healthEnabled = cfg.health_enabled;

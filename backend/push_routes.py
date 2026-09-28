@@ -330,7 +330,7 @@ async def handle_push_test(request: Request, body: PushTestBody):
             webpush, subscription_info=sub, data=payload,
             vapid_private_key=vapid_private,
             vapid_claims=claims, ttl=c.notif_push_ttl,
-            timeout=30,
+            timeout=c.notif_push_timeout,
         )
         status = getattr(resp, 'status_code', None)
         body_text = getattr(resp, 'text', '')[:200] if resp else ''

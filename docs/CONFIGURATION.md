@@ -17,6 +17,7 @@ Example files are provided: `config/app.yaml.example`, `config/models.yaml.examp
   - [auto_archive](#auto_archive---automatic-archiving-of-offline-models) - Automatic archiving
   - [stalls](#stalls---stall-detection-thresholds-inter-token-latency) - Stall detection thresholds
   - [websocket](#websocket---websocket-settings) - WebSocket settings
+  - [ui](#ui---browser-settings) - Browser timings, caching, chart and range defaults
   - [notifications](#notifications---notification-system) - Notification system
     - [notifications.events](#notificationsevents) - Event toggles
     - [notifications.in_app](#notificationsin_app) - In-app toast settings
@@ -101,6 +102,7 @@ app:
 | `token_encoding` | string | (required) | tiktoken encoding used to count streamed tokens (for example `o200k_base`). Cross-validates provider-reported `completion_tokens` and normalizes ITL when a provider batches several tokens per chunk. Loaded on a background thread on first use and cached under `data/tiktoken` (see `TIKTOKEN_CACHE_DIR`); until it is available, token counts fall back to chunk counts. |
 | `token_encoding_retry` | duration | (required) | How long to wait before retrying a failed `token_encoding` load (for example `1h`). Each failed attempt is logged once. |
 | `prompts.suffix` | string | (required) | Suffix appended to every random prompt - drives output length for TPS/TTFT measurement. |
+| `degraded_critical_metrics` | int | (required) | A benchmark counts as degraded (`degraded_reason: critical_tier`) when at least this many of its metrics sit in the Critical (last) tier. The Help texts state this number. |
 
 #### `testing.health_check` - lightweight health checks
 
@@ -129,9 +131,16 @@ Probes detect: vision, tools, structured output, cache support, and thinking/rea
 | `uptime_window` | int | (required) | Uptime calculation window in seconds. |
 | `recent_history` | duration | (required) | Duration of recent history kept in memory (e.g. `2d`, `2h`, `1w`). Cap is dynamically computed. |
 | `min_data_points_score` | int | (required) | Minimum data points needed to compute composite scores. |
-| `min_data_points_trend` | int | (required) | Minimum data points per half for trend computation. |
-| `history_query_limit` | int | (required) | Maximum rows returned by history queries (modal charts, history tables). |
+| `trend_window` | duration | (required) | Trends compare the median of this last stretch of results (measured back from the newest one, e.g. `12h`) with the median of everything before it in the range: recent history for the cards, the chosen range in the model modal. |
+| `min_data_points_trend` | int | (required) | Minimum results in each of the two windows; with fewer, the metric has no trend (no arrow) rather than a direction from a handful of tests. |
+| `trend_deadbands` | object | (required) | Per trended metric (`tps`, `ttft_ms`, `stall_count`, `raw_p99_itl_ms`, `effective_itl_tail_ratio`, `chunk_token_ratio`, `consistency_score`, `speed_score`, `available`, `reliability_score`), the smallest change in its own unit that counts as improving or degrading; smaller moves are `stable`. Provider trends take the median of their models' signed changes against the same deadband. |
+| `history_query_limit` | int | (required) | Maximum rows returned by history queries (modal charts, history tables); also the largest `limit` a history request may ask for. |
+| `max_chart_buckets` | int | (required) | Largest `buckets` a chart request (`/api/metrics?model=`) may ask for. |
 | `provider_fetch_ttl` | int | (required) | How often (seconds) to re-fetch provider page titles/logos. |
+| `fetch_timeout` | number | (required) | HTTP timeout (seconds) of the background fetches: provider pages, logos and model info. Their connect timeout is `server.http_connect_timeout`. |
+| `provider_fetch_concurrency` | int | (required) | Provider pages and logos fetched at once. |
+| `model_info_fetch_concurrency` | int | (required) | Model info lookups run at once. |
+| `provider_fetch_max_bytes` | int | (required) | Largest provider logo kept (bytes); a larger homepage is cut to this size before its head is parsed. |
 | `cleanup_interval` | int | (required) | How often (seconds) to run DB cleanup: delete old results and orphaned rows. |
 | `write_batch_interval` | float | (required) | How often (seconds) to flush buffered SQLite writes and WS broadcasts. |
 | `write_batch_max_buffer` | int | (required) | Maximum buffered results before triggering an immediate flush. |
@@ -158,7 +167,7 @@ Archived models stop being tested but remain visible in the UI. Per-model or per
 
 ### `websocket` - webSocket settings
 
-Everything under `reconnect` and `unreachable`, plus `stale_after`, is the browser's connection policy: the server sends it in the page bootstrap (`window.__MW_CONN__`) and again in the `hello` frame of every accepted socket, so a hot reload reaches open pages on their next connect.
+Everything under `reconnect` and `unreachable`, plus `stale_after`, is the browser's connection policy: the server sends it in the page bootstrap (`window.__MW_BOOT__.conn`) and again in the `hello` frame of every accepted socket, so a hot reload reaches open pages on their next connect.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -174,6 +183,26 @@ Everything under `reconnect` and `unreachable`, plus `stale_after`, is the brows
 | `ping_interval` | number | (required) | Seconds between protocol-level pings from the server. A reverse proxy's WebSocket read timeout must exceed it. Applied when the server starts (`python -m backend.main`); restart after changing it. |
 | `ping_timeout` | number | (required) | Seconds a client has to answer a ping before the server drops the connection. Applied at start, like `ping_interval`. |
 
+### `ui` - browser settings
+
+Settings for the dashboard page. The server sends them in the page bootstrap (`window.__MW_BOOT__.ui`) and again in `/api/config`, so a reload reaches open pages after their next config fetch. Timings are in seconds.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `check_line_refresh` | number | (required) | Seconds between refreshes of the check-line ages in an open model modal. |
+| `metrics_poll` | number | (required) | While the live socket is down, seconds between refetches of the dashboard data. |
+| `deploy_poll` | number | (required) | Seconds between `/api/deploy-version` checks; a changed version reloads the page. |
+| `provider_data_max_age` | number | (required) | A provider's card data older than this is refetched when the provider scrolls back into view. |
+| `eager_providers` | int | (required) | Providers whose card data the first page load fetches; the others load as they scroll near the viewport, so the page's size follows the viewport rather than the model count. |
+| `chart_update_interval` | number | (required) | At most one redraw of a model's card chart per this many seconds. |
+| `chart_offscreen_destroy` | number | (required) | A card chart that stays off screen this long is freed (and rebuilt when it comes back). |
+| `chart_cleanup_interval` | number | (required) | How often off-screen charts are checked. |
+| `chart_max_pixel_ratio` | number | (required) | Upper bound (>= 1) for the chart canvas pixel ratio. The screen's own ratio is used up to this value: 1 renders blurry on high-DPI screens, each step up costs canvas memory. |
+| `freshness.aging_ratio` | number | (required) | A check age above this multiple of the check's interval shows as "Aging". |
+| `freshness.stale_ratio` | number | (required) | A check age above this multiple shows as "Stale"; must exceed `aging_ratio`. |
+| `cache_ttl.config`, `cache_ttl.providers`, `cache_ttl.model_info`, `cache_ttl.metrics`, `cache_ttl.vapid_key` | int | (required) | Seconds the browser's IndexedDB cache keeps each item before the page refetches it. |
+| `default_ranges.chart.desktop`, `default_ranges.chart.phone`, `default_ranges.history.desktop`, `default_ranges.history.phone` | string | (required) | The time range (a `time_ranges` key) the model modal's chart and history table open with, on wide screens and on phones (below 640 px), until the user picks another. |
+
 ### `notifications` - notification system
 
 | Field | Type | Default | Description |
@@ -181,6 +210,9 @@ Everything under `reconnect` and `unreachable`, plus `stale_after`, is the brows
 | `enabled` | bool | (required) | Master toggle for all notification delivery (push, webhook, in-app). |
 | `webhook_timeout` | int | (required) | HTTP timeout for webhook delivery (seconds). |
 | `push_ttl` | int | (required) | Push notification TTL (seconds). |
+| `push_timeout` | number | (required) | HTTP timeout for delivering one push message (seconds). |
+| `status_cooldown` | number | (required) | Seconds before the same model may send another status-change notification (offline, recovered, degraded). |
+| `metric_cooldown` | number | (required) | Seconds before the same model and metric may send another first TPS/TTFT degradation notification; further drops and recoveries always notify. |
 | `events` | object | (required) | Which events trigger notifications (see below). |
 | `degraded_tps_tier` | int | (required) | Tier index (0-4) that triggers TPS degradation alerts. |
 | `degraded_ttft_tier` | int | (required) | Tier index (0-4) that triggers TTFT degradation alerts. |
@@ -207,8 +239,8 @@ Everything under `reconnect` and `unreachable`, plus `stale_after`, is the brows
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enables in-app toast notifications |
-| `toast_duration_ms` | int | How long toasts stay visible (milliseconds) |
-| `history_size` | int | Max notifications kept in in-memory history |
+| `toast_duration_ms` | int | How long toasts stay visible (milliseconds); the page gets it with the `ui` settings |
+| `history_size` | int | Max notifications kept in in-memory history, on the server and in the page |
 | `retention_days` | int | Days before in-app history entries are deleted |
 | `api_response_cap` | int | Max notifications returned by `/api/notifications` |
 
@@ -271,7 +303,9 @@ Each metric entry:
 | Field | Type | Description |
 |-------|------|-------------|
 | `higher_is_better` | bool | `true` = higher is better (e.g. TPS); `false` = lower is better (e.g. TTFT) |
-| `thresholds` | list[5] | Five threshold values matching the five tiers. For `higher_is_better: true`, `>=` each threshold. For `false`, `<` each threshold. |
+| `thresholds` | list[5] | Five threshold values matching the five tiers, best tier first. For `higher_is_better: true`, `>=` each threshold, strictly decreasing. For `false`, `<` each threshold, positive and strictly increasing, and the last value must be the `0` sentinel of the open-ended worst tier. Validation rejects any other order. |
+
+Composite scores interpolate within tiers: the boundary after tier *i* scores `1 - i/4` in both directions (so a value on a boundary scores the same whether higher or lower is better), Excellent scores 1.0, and the open-ended Critical tier of a lower-is-better metric spans as far again as the Bad tier, down to 0.
 
 Metrics with thresholds:
 
@@ -288,6 +322,7 @@ Metrics with thresholds:
 | `chunk_token_ratio` | lower | [1.5, 3.0, 5.0, 8.0, 0] | Tokens per SSE delivery |
 | `burst_arrival_pct` | lower | [5, 15, 30, 50, 0] | Percentage |
 | `chunk_token_cv` | lower | [0.1, 0.3, 0.5, 1.0, 0] | Coefficient of variation |
+| `scores` | higher | [80, 60, 40, 20, 0] | Composite scores (0-100): card colours, chart zones and the Scores filter |
 
 ### `scores` - composite scores
 
@@ -298,9 +333,9 @@ Each score is a weighted average of metric tiers (0-1 normalized).
 | `consistency.weights` | object | Weighted metrics: `stall_count`, `effective_itl_tail_ratio`, `chunk_token_ratio`, `burst_arrival_pct` |
 | `speed.weights` | object | Weighted metrics: `ttft_ms`, `tps` |
 | `reliability.availability_weight` | float | Weight for uptime |
-| `reliability.quality_weight` | float | Weight for quality (consistency + speed) |
+| `reliability.quality_weight` | float | Weight for quality: the share of recent benchmarks that were not degraded |
 
-Weights in each `weights` object should sum to 1.0. The reliability `availability_weight + quality_weight` should sum to 1.0.
+Weights in each `weights` object should sum to 1.0. Reliability is `availability_score x (availability_weight + quality_weight x quality) x 100`, so `availability_weight + quality_weight` should sum to 1.0. The Help texts list the configured components (`/api/config` sends the weights).
 
 ```yaml
 scores:
@@ -412,6 +447,8 @@ Defines automated compliance test suites that run against monitored LLM endpoint
 |-------|----------|------|-------------|
 | `enabled` | yes | bool | Master toggle for audit tests |
 | `interval` | yes | duration | How often to run audit tests (seconds or duration string: `6h`, `1d`, etc.) |
+| `max_error_chars` | yes | int | Characters kept of a failed eval's error message |
+| `max_response_chars` | yes | int | Characters kept of the model response a failed eval shows |
 | `suites` | yes | object | Dict of suite configurations (keyed by suite name) |
 
 ### Suite fields
@@ -432,6 +469,8 @@ Audit test timeout uses `testing.timeout` from `app.yaml` (no per-audit timeout 
 audit:
   enabled: true
   interval: 21600
+  max_error_chars: 300
+  max_response_chars: 4000
 
   suites:
     synbad:

@@ -1,8 +1,9 @@
 // Modal history table: sortable columns, day separators, load-more pagination,
 // and mobile accordion view. Benchmark and health tabs share rendering but
 // use different column sets (BENCH_COLS vs HEALTH_COLS).
-import { esc, setHTML, logError, logTag, STATUS_GLYPH } from './utils.js';
-import { tpsColor, ttftColor, stallColor, p99ItlColor, tailColor, batchingColor, fmtLatency, fmtTps, fmtTail, fmtBatching, fmtMsCompact, STATUS_TEXT, recordErrorText, degradedDescHTML } from './format.js';
+import { esc, setHTML, logError, logTag, STATUS_GLYPH, chevronSVG } from './utils.js';
+import { LS } from './state.js';
+import { tpsColor, ttftColor, stallColor, p99ItlColor, tailColor, batchingColor, fmtLatency, fmtTps, fmtTail, fmtBatching, fmtMsCompact, STATUS_TEXT, recordErrorText, degradedDescHTML, metricLabel } from './format.js';
 import { registerTip } from './tooltips.js';
 import { fetchHistory, HISTORY_PAGE_SIZE } from './api.js';
 import { _localDateISO, _updateHistRangeLabel, getHistSince, getHistUntil, setOpenModelKey as _setOpenModelKey } from './modal-ranges.js';
@@ -72,38 +73,38 @@ export const BENCH_COLS = [
     cell(h) { return h.timestamp ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'; },
   },
   {
-    id: 'ttft', label: 'TTFT', sort: 'ttft', tip: 'ttft',
+    id: 'ttft', metric: 'ttft', sort: 'ttft', tip: 'ttft',
     tdCls: h => ttftColor(h.ttft_ms),
     cell(h) { return fmtLatency(h.ttft_ms); },
   },
   {
-    id: 'tps', label: 'TPS', sort: 'tps', tip: 'tps',
+    id: 'tps', metric: 'tps', sort: 'tps', tip: 'tps',
     tdCls: h => tpsColor(h.tps),
     cell(h) { return fmtTps(h.tps); },
   },
   {
-    id: 'stalls', label: 'Stalls', sort: 'stalls', tip: 'stall',
+    id: 'stalls', metric: 'stall_count', sort: 'stalls', tip: 'stall',
     tdCls: h => stallColor(h.stall_count),
     cell(h) { return h.stall_count != null ? h.stall_count : '--'; },
   },
   {
-    id: 'p99', label: 'P99\u00a0ITL (raw)', sort: 'p99', tier2: true, tip: 'p99Itl',
+    id: 'p99', metric: 'raw_p99_itl_ms', sort: 'p99', tier2: true, tip: 'p99Itl',
     tdCls: h => p99ItlColor(h.raw_p99_itl_ms),
     cell(h) { return h.raw_p99_itl_ms != null ? fmtLatency(h.raw_p99_itl_ms) : '--'; },
   },
   {
-    id: 'batch', label: 'Batch', sort: 'batch', tier2: true, tip: 'batching',
+    id: 'batch', metric: 'chunk_token_ratio', short: true, sort: 'batch', tier2: true, tip: 'batching',
     tdCls: h => batchingColor(h.chunk_token_ratio),
     cell(h) { return fmtBatching(h.chunk_token_ratio); },
   },
   {
-    id: 'tail', label: 'Tail (eff.)', sort: 'tail', tier2: true, tip: 'itlTailRatio',
+    id: 'tail', metric: 'effective_itl_tail_ratio', short: true, sort: 'tail', tier2: true, tip: 'itlTailRatio',
     tdCls: h => tailColor(h.effective_itl_tail_ratio),
     cell(h) { return h.effective_itl_tail_ratio != null ? fmtTail(h.effective_itl_tail_ratio) : '--'; },
   },
 
   {
-    id: 'jitter', label: 'Jitter', tier2: true, tip: 'networkJitter',
+    id: 'jitter', metric: 'network_jitter_ms', short: true, tier2: true, tip: 'networkJitter',
     cell(h) { return h.network_jitter_ms != null ? fmtMsCompact(h.network_jitter_ms) : '--'; },
   },
 
@@ -122,7 +123,7 @@ export const HEALTH_COLS = [
     cell(h) { return h.timestamp ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'; },
   },
   {
-    id: 'ttft', label: 'TTFT', sort: 'ttft', tip: 'ttft',
+    id: 'ttft', metric: 'ttft', sort: 'ttft', tip: 'ttft',
     tdCls: h => ttftColor(h.ttft_ms),
     cell(h) { return fmtLatency(h.ttft_ms); },
   },
@@ -133,12 +134,15 @@ export const HEALTH_COLS = [
   },
 ];
 
+// A column's header: its own label, or its metric's label from the backend (METRIC_LABELS)
+function _colLabel(c) { return c.label ?? metricLabel(c.metric, c.short ? 'short' : 'full'); }
+
 const _BENCH_ACC_SUMMARY = new Set(BENCH_COLS.filter(c => !c.tier2).map(c => c.id));
 const _BENCH_ACC_DETAIL = BENCH_COLS.filter(c => c.tier2);
 const _HEALTH_ACC_SUMMARY = new Set(HEALTH_COLS.filter(c => !c.tier2).map(c => c.id));
 const _HEALTH_ACC_DETAIL = HEALTH_COLS.filter(c => c.tier2);
 
-export function _showTier2() { return _historyTab === 'health' || localStorage.getItem('mw_table_cols') === '1'; }
+export function _showTier2() { return _historyTab === 'health' || localStorage.getItem(LS.TABLE_COLS) === '1'; }
 function _activeCols() {
   const cols = _historyTab === 'health' ? HEALTH_COLS : BENCH_COLS;
   return _showTier2() ? cols : cols.filter(c => !c.tier2);
@@ -150,10 +154,11 @@ function _hdrHTML(c) {
   if (c.sort) cls.push('sortable');
   if (c.tip) cls.push('tip-label');
   const attrs = [];
-  if (c.sort) attrs.push(`data-sort="${c.sort}"`, `data-sort-label="${c.label.replace(/\u00a0/g, ' ')}"`);
+  const label = esc(_colLabel(c));
+  if (c.sort) attrs.push(`data-sort="${c.sort}"`, `data-sort-label="${label}"`);
   if (c.tip) attrs.push(`data-tip="${c.tip}"`, 'tabindex="0"');
   const indicator = c.sort ? `<span class="sort-ind" aria-hidden="true">${_sortIndicator(c.sort)}</span>` : '';
-  return `<th class="${cls.join(' ')}"${attrs.length ? ' ' + attrs.join(' ') : ''}>${c.label}${indicator}</th>`;
+  return `<th class="${cls.join(' ')}"${attrs.length ? ' ' + attrs.join(' ') : ''}>${label}${indicator}</th>`;
 }
 
 function _cellHTML(c, h) {
@@ -180,6 +185,12 @@ function _dayLabel(ts) {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
+// A day header is a button: keyboard and screen readers get it for free, and one chevron turns
+// with aria-expanded like the provider toggle (finding F54: two mechanisms turned it wrong)
+function _dayToggleHTML(ts) {
+  return `<button type="button" class="day-toggle" aria-expanded="true" data-tip="collapseDay">${chevronSVG('day-chevron', 12)}<span class="day-label">${_dayLabel(ts)}</span></button>`;
+}
+
 function _rowDayKey(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
@@ -195,7 +206,7 @@ export function _historyRowsHTML(history) {
     if (dayKey && dayKey !== prevDay) {
       prevDay = dayKey;
       const iso = _localDateISO(h.timestamp);
-      parts.push(`<tr class="hist-day" data-date="${esc(iso)}"><td colspan="${span}"><div class="hist-day-inner"><span class="day-label">${_dayLabel(h.timestamp)}</span><span class="day-chevron">▸</span></div></td></tr>`);
+      parts.push(`<tr class="hist-day" data-date="${esc(iso)}"><td colspan="${span}">${_dayToggleHTML(h.timestamp)}</td></tr>`);
     }
     let rowCls = '';
     if (h.retry_attempt) { rowCls = 'row-retry'; }
@@ -217,7 +228,7 @@ export function _accordionItems(history) {
     const dayKey = h.timestamp ? _rowDayKey(h.timestamp) : '';
     if (dayKey && dayKey !== prevDay) {
       prevDay = dayKey;
-      html += `<div class="day-sep-acc" data-date="${esc(_localDateISO(h.timestamp))}"><span class="day-chevron">▸</span>${_dayLabel(h.timestamp)}</div>`;
+      html += `<div class="day-sep-acc" data-date="${esc(_localDateISO(h.timestamp))}">${_dayToggleHTML(h.timestamp)}</div>`;
     }
     const borderCls = h.retry_attempt ? 'border-l-2 border-l-status-degraded border-border-default' : h.degraded ? 'border-l-2 border-l-status-degraded border-border-default' : !h.success ? 'border-l-2 border-l-status-error border-border-default' : 'border-border-default';
     const detailHTML = accDetail.map(c => {
@@ -225,8 +236,7 @@ export function _accordionItems(history) {
       if (!val && c.id === 'error') return '';
       const dyn = c.tdCls ? c.tdCls(h) : '';
       const cls = dyn ? ` ${dyn}` : '';
-      const label = c.label.replace(/\u00a0/g, ' ');
-      return `<div>${label} <span class="font-mono${cls}">${val}</span></div>`;
+      return `<div>${esc(_colLabel(c))} <span class="font-mono${cls}">${val}</span></div>`;
     }).join('');
     const msgHTML = _accMessageHTML(h);
       const _ACC_COL_WEIGHTS = { time: 1.2, ttft: 1.4, tps: 1.6, stalls: 0.9, p99: 1.3, batch: 1.1, tail: 1.1, jitter: 1.1, ok: 0.7 };
@@ -259,30 +269,29 @@ export function _accordionItems(history) {
 
 export function _bindDaySepClicks() {
   document.querySelectorAll('.hist-day, .day-sep-acc').forEach(el => {
-    el.addEventListener('click', () => _toggleDayCollapse(el));
+    el.querySelector('.day-toggle')?.addEventListener('click', () => _toggleDayCollapse(el));
   });
+}
+
+function _setDayCollapsed(dayEl, collapsed) {
+  dayEl.classList.toggle('day-collapsed', collapsed);
+  dayEl.querySelector('.day-toggle')?.setAttribute('aria-expanded', String(!collapsed));
+  const dayEnd = dayEl.classList.contains('day-sep-acc') ? 'day-sep-acc' : 'hist-day';
+  let sibling = dayEl.nextElementSibling;
+  while (sibling && !sibling.classList.contains(dayEnd)) {
+    if (!sibling.classList.contains('load-more-row')) sibling.classList.toggle('day-row-hidden', collapsed);
+    sibling = sibling.nextElementSibling;
+  }
 }
 
 function _toggleDayCollapse(dayEl) {
   const date = dayEl.dataset.date;
-  let collapsed;
+  const collapsed = !dayEl.classList.contains('day-collapsed');
   if (date) {
-    if (_collapsedDays.has(date)) { _collapsedDays.delete(date); collapsed = false; }
-    else { _collapsedDays.add(date); collapsed = true; }
-  } else {
-    collapsed = dayEl.classList.toggle('day-collapsed');
+    if (collapsed) _collapsedDays.add(date);
+    else _collapsedDays.delete(date);
   }
-  dayEl.classList.toggle('day-collapsed', collapsed);
-  const chevron = dayEl.querySelector('.day-chevron');
-  if (chevron) chevron.textContent = collapsed ? '▾' : '▸';
-  const isAcc = dayEl.classList.contains('day-sep-acc');
-  const dayEnd = isAcc ? 'day-sep-acc' : 'hist-day';
-  let sibling = dayEl.nextElementSibling;
-  while (sibling && !sibling.classList.contains(dayEnd)) {
-    if (!sibling.classList.contains('load-more-row'))
-      sibling.classList.toggle('day-row-hidden', collapsed);
-    sibling = sibling.nextElementSibling;
-  }
+  _setDayCollapsed(dayEl, collapsed);
   _reobserveLoadMore();
 }
 
@@ -298,19 +307,7 @@ export function _reobserveLoadMore() {
 function _restoreCollapsedDays() {
   if (!_collapsedDays.size) return;
   document.querySelectorAll('.hist-day, .day-sep-acc').forEach(el => {
-    const date = el.dataset.date;
-    if (!date || !_collapsedDays.has(date)) return;
-    el.classList.add('day-collapsed');
-    const chevron = el.querySelector('.day-chevron');
-    if (chevron) chevron.textContent = '▾';
-    const isAcc = el.classList.contains('day-sep-acc');
-    const dayEnd = isAcc ? 'day-sep-acc' : 'hist-day';
-    let sibling = el.nextElementSibling;
-    while (sibling && !sibling.classList.contains(dayEnd)) {
-      if (!sibling.classList.contains('load-more-row'))
-        sibling.classList.add('day-row-hidden');
-      sibling = sibling.nextElementSibling;
-    }
+    if (_collapsedDays.has(el.dataset.date)) _setDayCollapsed(el, true);
   });
 }
 

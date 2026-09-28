@@ -87,11 +87,17 @@ curl http://localhost:8080/api/metrics
     "last_benchmark_epoch": 1785545522.8,
     "last_success_epoch": 1785545522.8,
     "data_start_epoch": 1784000000.0,
-    "scores": {"consistency": 0.85, "speed": 0.72, "reliability": 0.91},
-    "trends": {"tps": "up", "ttft": "flat"}
+    "scores": {"consistency": 85.2, "speed": 72.0, "reliability": 91.3},
+    "trends": {
+      "since_ts": 1785372722.8,
+      "tps": {"direction": "improving", "change": 6.4, "delta": 6.4, "unit": "t/s", "data_points": 9},
+      "ttft_ms": {"direction": "stable", "change": 120.0, "delta": -120.0, "unit": "ms", "data_points": 9}
+    }
   }
 }
 ```
+
+Scores are 0-100. Each trend compares the median of the last `metrics.trend_window` with the median before it: `delta` is signed with positive meaning better (for lower-is-better metrics such as TTFT a drop is positive), `change` is its size, `data_points` the results in the recent window, and a move smaller than the metric's `metrics.trend_deadbands` entry is `stable`. A metric with fewer than `metrics.min_data_points_trend` recent results has no entry. `since_ts` is the time of the oldest result the trends cover. Provider summaries carry the same entries, taken as the median of their models' deltas, plus `models`, the number of models with a trend.
 
 **Example - single-model history**:
 ```bash
@@ -137,7 +143,7 @@ curl http://localhost:8080/api/providers
 
 ### GET /api/config
 
-Get runtime configuration. Returns merged config: app name, intervals, audit/probe settings, color thresholds, and time ranges.
+Get runtime configuration. Returns merged config: app name, intervals, audit/probe settings, whether the scheduler runs, scoring rules, color thresholds, time ranges, the browser settings (`ui`) and every label table. The response is cached until the config reloads or the scheduler starts or stops.
 
 **Responses**:
 - `200`: Config object (see below).
@@ -157,24 +163,31 @@ curl http://localhost:8080/api/config
   "audit_suites": {"synbad": {"enabled": true, "url": "https://github.com/synthetic-lab/synbad"}},
   "probe_enabled": true,
   "probe_interval_seconds": 86400,
-  "last_run_ago_seconds": 13,
-  "next_run_in_seconds": 1,
-  "color_thresholds": {"tiers": [...], "uptime": {...}, "tps": {...}},
+  "scheduler": {"running": true, "paused": false},
+  "degraded_critical_metrics": 2,
+  "stalls": {"visible_threshold_ms": 500, "hiccup_multiplier": 3},
+  "scores": {"consistency": {...}, "speed": {...}, "reliability": {"availability_weight": 0.75, "quality_weight": 0.25}},
+  "color_thresholds": {"tiers": [...], "uptime": {...}, "tps": {...}, "scores": {...}},
   "time_ranges": [{"key": "4h", "label": "4h"}, ...],
+  "ui": {"check_line_refresh": 30, "metrics_poll": 30, "deploy_poll": 60, "toast_duration_ms": 5000, ...},
   "status_values": ["online", "degraded", "error", "unknown"],
+  "status_labels": {"online": "Online", "degraded": "Degraded", "error": "Offline", "unknown": "Untested"},
   "test_types": ["benchmark", "health", "audit", "probe"],
   "test_type_labels": {"health": {"full": "Health", "short": "HC"}, "benchmark": {"full": "Bench", "short": "BM"}, ...},
   "chart_views": ["speed", "consistency", "scores", "health"],
+  "chart_view_labels": {"speed": "TPS + TTFT", ...},
+  "capabilities": [{"key": "thinking", "label": "Thinking", "desc": "chain-of-thought reasoning"}, ...],
   "event_labels": {"offline": "Offline", ...},
-  "metric_labels": {"tps": "TPS", ...}
+  "metric_labels": {"tps": "TPS", ...},
+  "metric_short_labels": {"stall_count": "Stalls", ...}
 }
 ```
 
-The label and value lists come from `backend/state.py` and are the only copy the frontend uses.
+`scheduler.running` says whether tests run; `paused` is true when the server started with `MW_DISABLE_TESTS`. `ui` holds the `app.yaml` `ui` section plus the in-app toast duration and history size; the page also gets it in its bootstrap. The label and value lists come from `backend/state.py` and are the only copy the frontend uses.
 
 ### GET /api/deploy-version
 
-Get the deployment version (mtime of most recently modified static file). The frontend polls this every 60s to detect deployments and trigger a reload.
+Get the deployment version: the newest mtime of the frontend files and the built stylesheet, read on every call, so an edit or a rebuilt stylesheet shows without any page load. The frontend polls it every `ui.deploy_poll` seconds and reloads when it changes.
 
 **Responses**:
 - `200`: `{"version": <float>}`
@@ -494,6 +507,7 @@ curl http://localhost:8080/health/live
 In addition to the REST API, a WebSocket endpoint is available at `/ws` for real-time push updates. The server broadcasts `testing`, `result`, `result_batch`, `audit_result`, `probe_result`, `notification`, `config_updated` and `server_shutdown` messages (see [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow behind them), plus the connection frames below.
 
 - **Origin check**: a page served by this server (its `Origin` host equals the `Host` header) is always accepted; other origins must be listed in `websocket.allowed_origins` (empty list = all).
-- **`hello`**: the first frame of every accepted socket, `{"type": "hello", "config": {...}}`. The client treats it as the proof of acceptance. `config` is the connection policy also injected into the page as `window.__MW_CONN__`: `ws_path`, `liveness_path`, `stale_after`, `reconnect`, `unreachable` and `close_codes`.
+- **`hello`**: the first frame of every accepted socket, `{"type": "hello", "config": {...}, "scheduler": {"running": ..., "paused": ...}}`. The client treats it as the proof of acceptance and closes a socket that sends none within `stale_after` seconds (counted as a failed attempt). `config` is the connection policy the page also gets in its bootstrap as `window.__MW_BOOT__.conn`: `ws_path`, `liveness_path`, `stale_after`, `reconnect`, `unreachable` and `close_codes`. `scheduler` is the same object as in `/api/config`.
+- **`result_batch`**: the results of one flush window, `{"type": "result_batch", "results": {"<model key>": {"type": "result", "model": ..., "record": {...}, "test_type": ..., "status": ..., "uptime_pct": ..., "scores": {...}, "trends": {...}}}}`. After a final (not retried) benchmark the entry also carries `card_buckets`, that model's card chart buckets in the `/api/metrics?card_buckets=1` shape, so the page redraws that card without refetching.
 - **`heartbeat`**: `{"type": "heartbeat"}` every `websocket.heartbeat_interval` seconds, even with `MW_DISABLE_TESTS`. The client reconnects after `websocket.stale_after` seconds without any frame.
 - **Close codes**: 1008 origin not allowed (permanent; the client retries at `reconnect.max_delay`), 1013 connection limit reached (transient), 1012 server restarting, 1009 message over `websocket.max_message_bytes`, 1011 handler error, 4000 client-side stale close. The client sends `{"type": "sync_prefs", "prefs": {...}}`, at most `websocket.sync_prefs_per_minute` times per minute.

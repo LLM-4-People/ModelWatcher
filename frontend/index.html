@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="__STATIC_PREFIX__/icon-192.png">
 <link rel="manifest" href="__STATIC_PREFIX__/manifest.json">
 <link rel="apple-touch-icon" href="__STATIC_PREFIX__/icon-192.png">
-<meta name="theme-color" content="#0c1220">
+<meta name="theme-color" content="__THEME_COLOR__">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26,7 +26,7 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
 <link rel="preload" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5/files/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-<style>@font-face{font-family:'Inter Fallback';src:local('Arial');ascent-override:90.20%;descent-override:22.48%;line-gap-override:0.00%;size-adjust:107.40%}@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url('https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5/files/inter-latin-wght-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}html{background:#f8fafc;color:#0f172a;font-family:'Inter','Inter Fallback',system-ui,-apple-system,sans-serif}html.dark{background:#0c1220;color:#e2e8f0}.float-bar{position:sticky;z-index:50}header.float-bar{top:0}footer.float-bar{bottom:0}html:not(.dark) #theme-btn .icon-sun{display:none}html.dark #theme-btn .icon-moon{display:none}</style>
+<style>@font-face{font-family:'Inter Fallback';src:local('Arial');ascent-override:90.20%;descent-override:22.48%;line-gap-override:0.00%;size-adjust:107.40%}@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url('https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5/files/inter-latin-wght-normal.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}html{background:var(--color-base);color:var(--color-text-primary);font-family:'Inter','Inter Fallback',system-ui,-apple-system,sans-serif}.float-bar{position:sticky;z-index:var(--z-bar)}header.float-bar{top:0}footer.float-bar{bottom:0}html:not(.dark) #theme-btn .icon-sun{display:none}html.dark #theme-btn .icon-moon{display:none}</style>
 <link rel="preload" href="__STATIC_PREFIX__/tailwind.min.css" as="style">
 <link rel="stylesheet" href="__STATIC_PREFIX__/tailwind.min.css">
 <style>
@@ -40,10 +40,10 @@
   #ws-status[data-state="connected"] { background-color: var(--color-success-400); }
   #ws-status[data-state="restarting"] { background-color: var(--color-warn-400); animation: pulse-dot 1.5s ease-in-out infinite; }
   #ws-status[data-state="busy"], #ws-status[data-state="rejected"] { background-color: var(--color-warn-400); }
-  #ws-status[data-state="disconnected"], #ws-status[data-state="down"] { background-color: var(--color-danger-400); }
+  #ws-status[data-state="disconnected"], #ws-status[data-state="down"], #ws-status[data-state="unconfigured"] { background-color: var(--color-danger-400); }
   @property --border-angle { syntax:'<angle>'; initial-value:0deg; inherits:false; }
   .testing-pulse { position: relative; }
-  .testing-pulse::after { content:''; position:absolute; inset:-2px; padding:2px; border-radius:0.75rem; background:conic-gradient(from var(--border-angle),transparent 50%,var(--glow-testing) 75%,var(--color-status-testing) 85%,transparent 100%); -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); -webkit-mask-composite:xor; mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); mask-composite:exclude; box-shadow:0 0 14px 1px var(--glow-testing-outer); --border-angle:0deg; animation:border-angle 2s linear infinite; pointer-events:none; z-index:1; }
+  .testing-pulse::after { content:''; position:absolute; inset:-2px; padding:2px; border-radius:0.75rem; background:conic-gradient(from var(--border-angle),transparent 50%,var(--glow-testing) 75%,var(--color-status-testing) 85%,transparent 100%); -webkit-mask:linear-gradient(black 0 0) content-box,linear-gradient(black 0 0); -webkit-mask-composite:xor; mask:linear-gradient(black 0 0) content-box,linear-gradient(black 0 0); mask-composite:exclude; box-shadow:0 0 14px 1px var(--glow-testing-outer); --border-angle:0deg; animation:border-angle 2s linear infinite; pointer-events:none; z-index:1; }
   [id^="card-"].testing-pulse::after { inset:0; padding:2px; background:conic-gradient(from var(--border-angle),transparent 40%,var(--glow-testing) 70%,var(--color-status-testing) 82%,transparent 100%); box-shadow:none; }
   .degraded-glow { position: relative; }
   .degraded-glow::before { content:''; position:absolute; inset:3px; border-radius:.5rem; z-index:1; box-shadow:inset 0 0 0 3px var(--glow-degraded), 0 0 12px 0 var(--glow-degraded-outer); pointer-events:none; }
@@ -63,6 +63,21 @@
      Defined before the components that extend .seg-list so their own display/alignment rules win. */
   :root { --seg-gap: 4px; }
   .seg-list { display: inline-flex; align-items: baseline; gap: var(--seg-gap); }
+  /* A row that holds a logo centres instead: an image's baseline is not its text's (finding F28) */
+  .seg-list.seg-center { align-items: center; }
+  /* Layer order, defined once (finding F52); a tooltip also hides when any layer opens (tooltips.js) */
+  :root { --z-raised: 10; --z-bar: 50; --z-modal: 55; --z-backdrop: 59; --z-panel: 60; --z-toast: 70; --z-popover: 80; --z-tip: 100; --z-skip: 110; --z-grain: 200; }
+  html.scroll-locked, html.scroll-locked body { overflow: hidden; }
+  /* The Critical tier is told apart by more than its colour: a heavy underline (findings F50, F71) */
+  .critical-mark { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+  .skip-link { position: absolute; left: 8px; top: -48px; z-index: var(--z-skip); padding: 8px 12px; border-radius: 8px; background: var(--color-panel-bg); color: var(--color-text-primary); border: 1px solid var(--color-border-strong); }
+  .skip-link:focus { top: 8px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  /* Card title: the button that opens the model; card text stays plain for the pointer (F74) */
+  .card-title { margin: 0; min-width: 0; }
+  .card-open { background: none; border: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 24px; }
+  .card-open:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; border-radius: 4px; }
+  .provider-name { margin: 0; min-width: 0; display: flex; }
   .seg-sep { color: var(--color-text-faint); }
   .seg-rule { width: 1px; align-self: stretch; background: var(--color-border-default); }
   .score-group { display: none; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--color-border-default); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -77,9 +92,14 @@
   .score-trend { display: inline-block; min-width: 0.7em; font-size: 11px; margin-left: 1px; text-align: center; }
   .score-trend:not(.text-text-muted) { animation: trend-breathe 1.8s ease-in-out infinite; }
   @keyframes trend-breathe { 0%, 100% { opacity: 1; transform: translateY(0); } 40% { opacity: 0.6; transform: translateY(-1px); } 60% { opacity: 0.6; transform: translateY(1px); } }
-  @media (prefers-reduced-motion: reduce) { .score-trend { animation: none; } }
+  /* One rule for every decorative animation and transition: with reduced motion nothing moves on
+     its own. !important outranks any selector that starts one (finding F70: a class selector lost
+     to .score-trend:not(...)) */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; scroll-behavior: auto !important; }
+  }
   .card-hover { box-shadow: var(--shadow-card); transition: transform .2s ease, box-shadow .2s ease; }
-  @media (hover: hover) { .card-hover:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); position: relative; z-index: 10; } .card-hover:active { transform: translateY(-1px) scale(.985); } }
+  @media (hover: hover) { .card-hover:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); position: relative; z-index: var(--z-raised); } .card-hover:active { transform: translateY(-1px) scale(.985); } }
   @media (hover: none) { .card-hover:active { transform: scale(.98); box-shadow: var(--shadow-card-hover); } }
 
    .app-logo { background: var(--color-surface-700); padding: 2px; }
@@ -104,10 +124,13 @@
   [data-sort]:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; border-radius: 2px; }
   .sort-ind { font-size: 0.65em; opacity: 0.4; margin-left: 2px; letter-spacing: -0.05em; }
   [aria-sort] > .sort-ind { opacity: 0.8; }
+  /* The 10 px status dot has a 24 px target around it (WCAG 2.5.8, finding F75) */
+  #ws-status { position: relative; }
+  #ws-status::after { content: ''; position: absolute; inset: -7px; }
   #ws-status:focus { border-radius: 50%; }
   .tip-label { border-bottom: 1px dotted var(--color-border-default); }
   #help-tip {
-    position: fixed; z-index: 100; pointer-events: none;
+    position: fixed; z-index: var(--z-tip); pointer-events: none;
     max-width: 280px; padding: 8px 12px;
     background: var(--color-chart-tooltip-bg); border: 1px solid var(--color-chart-tooltip-border); border-radius: 8px;
     font-size: 12px; line-height: 1.5; color: var(--color-text-secondary);
@@ -198,7 +221,7 @@
     left: 0;
     right: 0;
     width: 100%;
-    z-index: 50;
+    z-index: var(--z-bar);
     background: var(--color-float-bar-bg);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
@@ -224,7 +247,7 @@
   .provider-toggle-all {
     background: none; border: none; cursor: pointer;
     color: var(--color-text-muted); font-size: 11px;
-    padding: 4px 8px; border-radius: 4px;
+    padding: 4px 8px; border-radius: 4px; min-height: 24px;
     transition: color .15s, background .15s;
     touch-action: manipulation;
   }
@@ -232,7 +255,8 @@
   .chart-view-pill {
     background: none; border: 1px solid var(--color-border-default); cursor: pointer;
     color: var(--color-text-muted); font-size: 10px; line-height: 1;
-    padding: 3px 8px; border-radius: 4px;
+    padding: 3px 8px; border-radius: 4px; min-height: 24px; min-width: 24px;
+    display: inline-flex; align-items: center; justify-content: center;
     transition: color .15s, background .15s, border-color .15s;
   }
   .chart-view-pill.active { color: var(--color-text-primary); background: var(--color-active-bg); border-color: var(--color-text-muted); }
@@ -241,7 +265,7 @@
   @keyframes pill-pop { 0% { transform: scale(.92); } 60% { transform: scale(1.04); } 100% { transform: scale(1); } }
   .chart-view-pill:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 1px; }
   @media (max-width: 639px) {
-    .chart-view-pill { padding: 2px 6px; font-size: 10px; min-height: auto; }
+    .chart-view-pill { padding: 2px 6px; font-size: 10px; }
     .load-more-btn { padding: 4px 10px; font-size: 11px; min-height: auto; }
   }
   .hist-wrap { background: var(--color-raised); }
@@ -256,22 +280,30 @@
   .hist-table tbody tr.row-error td:first-child { box-shadow: inset 3px 0 0 var(--color-status-error); }
   .hist-table tbody tr.row-retry td:first-child { box-shadow: inset 3px 0 0 var(--color-status-degraded); }
 
-  .hist-day td { background: var(--color-overlay); padding: 6px 8px 4px; font-size: 10px; font-weight: 700; color: var(--color-text-faint); text-transform: uppercase; letter-spacing: .06em; cursor: pointer; user-select: none; border-bottom: 1px solid var(--color-border-subtle); position: sticky; top: var(--thead-h, 29px); z-index: 2; }
-  .hist-day:hover td { color: var(--color-text-primary); }
-  .hist-day-inner { display: flex; align-items: center; gap: 6px; }
-  .hist-day .day-label { flex: 1; }
-  .hist-day .day-chevron { font-size: 11px; opacity: .5; transition: transform .15s; }
-  .hist-day.day-collapsed .day-chevron { transform: rotate(90deg); }
-  .day-sep-acc { padding: 10px 8px 8px; font-size: 10px; font-weight: 700; color: var(--color-text-faint); text-transform: uppercase; letter-spacing: .06em; box-shadow: 0 1px 0 var(--color-border-default); margin-top: 4px; position: sticky; top: 0; z-index: 2; background: var(--color-overlay); cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
-  .day-sep-acc:hover { color: var(--color-text-primary); }
-  .day-sep-acc .day-chevron { font-size: 10px; opacity: .5; transition: transform .15s; }
-  .day-sep-acc.day-collapsed .day-chevron { transform: rotate(90deg); }
+  .hist-day td { background: var(--color-overlay); padding: 2px 4px; font-size: 10px; font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .06em; user-select: none; border-bottom: 1px solid var(--color-border-subtle); position: sticky; top: var(--thead-h, 29px); z-index: 2; text-align: left; }
+  .day-sep-acc { padding: 4px 4px 2px; font-size: 10px; font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .06em; box-shadow: 0 1px 0 var(--color-border-default); margin-top: 4px; position: sticky; top: 0; z-index: 2; background: var(--color-overlay); user-select: none; }
+  /* Day headers: one button, one chevron that points down when open and right when closed,
+     turned by aria-expanded like the provider toggle (finding F54) */
+  .day-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 2px 4px; background: none; border: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; text-align: left; border-radius: 4px; }
+  .day-toggle:hover { color: var(--color-text-primary); }
+  .day-toggle:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
+  .day-chevron { flex-shrink: 0; opacity: .7; transition: transform .15s; }
+  .day-toggle[aria-expanded="false"] .day-chevron { transform: rotate(-90deg); }
   .day-sep-acc:first-child { margin-top: 0; }
   .day-row-hidden { display: none !important; }
   .acc-item { border-bottom: 1px solid var(--color-border-default); }
   .acc-item[data-acc-toggle][aria-expanded="true"] .transition-transform { transform: rotate(180deg); }
   .day-sep-arrived { background: var(--color-accent-500) !important; transition: background 1.5s ease-out; }
   .day-sep-arrived.fade { background: var(--color-overlay) !important; }
+#modal { z-index: var(--z-modal); }
+  /* Prose that wraps at any character, so a long URL stays inside the box (finding F27) */
+  .modal-error-text { overflow-wrap: anywhere; }
+  /* Inline in prose, the separator takes the row gap from its container like a .seg-list item */
+  .modal-error-text > .seg-sep { margin-inline: var(--seg-gap); }
+  .filter-empty, .load-error { margin: 24px auto; max-width: 420px; padding: 20px; text-align: center; border: 1px dashed var(--color-border-strong); border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .filter-empty[hidden], .load-error[hidden] { display: none; }
+  .filter-empty-title, .load-error-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+  .filter-empty-detail, .load-error-detail { margin: 0; font-size: 12px; color: var(--color-text-muted); overflow-wrap: anywhere; }
 #modal-body { flex: 1 1 auto; min-height: 0; }
   #modal-scroll { flex: 1 1 auto; min-height: 0; overflow-x: clip; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--color-scrollbar-thumb) transparent; overscroll-behavior-y: contain; }
   #modal-scroll::-webkit-scrollbar { width: 10px; }
@@ -314,7 +346,7 @@
   @media (max-width: 639px) {
     @keyframes cal-in-mobile { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
   }
-  .date-range-popover { z-index: 80; background: var(--color-panel-bg); border: 1px solid var(--color-border-default); border-radius: 12px; padding: 12px; width: 268px; box-shadow: 0 16px 48px var(--color-panel-shadow); animation: cal-in .15s ease-out; }
+  .date-range-popover { z-index: var(--z-popover); background: var(--color-panel-bg); border: 1px solid var(--color-border-default); border-radius: 12px; padding: 12px; width: 268px; box-shadow: 0 16px 48px var(--color-panel-shadow); animation: cal-in .15s ease-out; }
   .drp-status { font-size: 11px; color: var(--color-text-muted); text-align: center; margin-bottom: 8px; min-height: 16px; }
   .drp-status-complete { color: var(--color-text-primary); }
   .drp-actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -327,7 +359,7 @@
    .skeleton-card { animation: skeleton-pulse 1.5s ease-in-out infinite; background: var(--color-overlay); border-radius: .75rem; min-height: 280px; }
    @media (prefers-reduced-motion: reduce) { .skeleton-card { animation: none; background: var(--color-border-default); } }
   #toast-container {
-    position: fixed; top: 70px; right: 16px; z-index: 60;
+    position: fixed; top: 70px; right: 16px; z-index: var(--z-toast);
     display: flex; flex-direction: column; gap: 8px;
     pointer-events: none; max-width: 360px; width: calc(100vw - 32px);
   }
@@ -364,20 +396,23 @@
   }
   #help-backdrop {
     position: fixed; inset: 0; background: var(--color-overlay-bg);
-    z-index: 59; display: none; backdrop-filter: blur(2px);
+    z-index: var(--z-backdrop); display: none; backdrop-filter: blur(2px);
   }
   #help-backdrop.open { display: block; }
   #help-panel {
     position: fixed; top: 0; right: 0; bottom: 0;
     width: 400px;
     background: var(--color-panel-bg); border-left: 1px solid var(--color-border-default);
-    box-shadow: -8px 0 32px var(--color-panel-shadow); z-index: 60;
+    box-shadow: -8px 0 32px var(--color-panel-shadow); z-index: var(--z-panel);
     display: flex; flex-direction: column;
     transform: translateX(100%);
-    transition: transform 250ms ease-out;
+    transition: transform 250ms ease-out, visibility 0s linear 250ms;
     pointer-events: none;
   }
-  #help-panel.open { transform: translateX(0); pointer-events: auto; }
+  /* Closed, the drawer is inert (help.js) and hidden, so neither its controls nor its shadow
+     reach the page (finding F73) */
+  #help-panel:not(.open) { box-shadow: none; visibility: hidden; }
+  #help-panel.open { transform: translateX(0); pointer-events: auto; visibility: visible; transition: transform 250ms ease-out; }
   .help-drag-handle {
     display: none; width: 36px; height: 4px; border-radius: 2px;
     background: var(--color-toggle-track); margin: 8px auto 4px; cursor: grab;
@@ -476,13 +511,13 @@
   }
   #notif-backdrop {
     position: fixed; inset: 0; background: var(--color-overlay-bg);
-    z-index: 59; display: none; backdrop-filter: blur(2px);
+    z-index: var(--z-backdrop); display: none; backdrop-filter: blur(2px);
   }
   #notif-backdrop.open { display: block; }
   #notif-panel {
     position: fixed; width: 380px; max-height: 500px;
     background: var(--color-panel-bg); border: 1px solid var(--color-border-default); border-radius: 12px;
-    box-shadow: 0 16px 48px var(--color-panel-shadow); z-index: 60;
+    box-shadow: 0 16px 48px var(--color-panel-shadow); z-index: var(--z-panel);
     display: none; flex-direction: column; overflow: hidden;
   }
   #notif-panel.open { display: flex; animation: panel-in .15s ease-out; }
@@ -510,7 +545,7 @@
   .notif-empty-body { font-size: 12px; color: var(--color-text-faint); line-height: 1.5; max-width: 230px; }
   .notif-empty-cta {
     margin-top: 12px; padding: 6px 16px; border-radius: 8px;
-    background: var(--color-accent-500); color: white;
+    background: var(--color-accent-500); color: var(--color-on-accent);
     font-size: 12px; font-weight: 600; cursor: pointer; border: none;
     transition: background .15s;
   }
@@ -566,7 +601,7 @@
   .notif-badge {
     position: absolute; top: 2px; right: 2px;
     min-width: 16px; height: 16px; padding: 0 4px;
-    border-radius: 8px; background: var(--color-accent-500); color: white;
+    border-radius: 8px; background: var(--color-accent-500); color: var(--color-on-accent);
     font-size: 10px; font-weight: 700; line-height: 16px;
     text-align: center; display: none;
   }
@@ -590,7 +625,7 @@
   .dark .notif-toggle.on { background: var(--color-accent-600); }
   .notif-toggle::after {
     content: ''; position: absolute; top: 2px; left: 2px;
-    width: 18px; height: 18px; border-radius: 50%; background: white;
+    width: 18px; height: 18px; border-radius: 50%; background: var(--color-on-accent);
     transition: transform .2s;
   }
   .notif-toggle.on::after { transform: translateX(18px); }
@@ -786,7 +821,7 @@
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 16px; height: 16px; padding: 0 4px;
     font-size: 10px; font-weight: 700; line-height: 1;
-    background: var(--color-accent-500); color: #fff;
+    background: var(--color-accent-500); color: var(--color-on-accent);
     border-radius: 999px; margin-left: 4px; flex-shrink: 0;
   }
   .filter-specs-btn:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 1px; }
@@ -840,8 +875,9 @@
     .filter-specs-btn { padding: 8px 12px; font-size: 12px; }
     /* Score tabs: larger touch targets */
     .filter-score-tab { padding: 8px 12px; font-size: 12px; min-height: 36px; }
-    /* Segmented controls: horizontal scroll, larger touch targets */
-    .filter-seg button { padding: 8px 12px; font-size: 12px; min-height: 36px; }
+    /* Segmented controls wrap onto more rows: a hidden scrollbar hid the last options (F96) */
+    .filter-seg { flex-wrap: wrap; overflow-x: visible; }
+    .filter-seg button { padding: 8px 12px; font-size: 12px; min-height: 36px; flex: 1 0 auto; }
     /* Status options: pill chips with adequate touch area */
     .filter-status-opts button { padding: 8px 14px; font-size: 13px; }
     /* Capability chips: larger touch targets */
@@ -858,6 +894,7 @@
 </style>
 </head>
 <body class="bg-base text-text-primary min-h-screen">
+<a class="skip-link" href="#provider-sections">Skip to models</a>
 
 <header class="float-bar border-b border-border-default top-0">
   <div class="float-bar-inner">
@@ -867,10 +904,9 @@
         <h1 class="text-lg font-semibold tracking-tight">__APP_NAME__</h1>
         <span id="ws-status" class="ml-2 inline-block w-2.5 h-2.5 rounded-full" data-state="connecting" role="status" data-tip="ws_connecting" tabindex="0" aria-label="connecting"></span>
       </div>
-      <span id="schedule-info" class="text-xs text-text-muted mt-0.5"></span>
+      <span id="schedule-info" class="text-xs text-text-muted mt-0.5" data-tip="schedule"></span>
     </div>
     <div class="flex items-center gap-3">
-      <span id="config-warning" class="text-xs text-warn-400 hidden sm:inline"></span>
       <div class="flex items-center">
       <button id="theme-btn" class="header-icon-btn text-text-muted" data-tip="themeToggle" aria-label="Switch theme">
         <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -915,36 +951,19 @@
       <div id="filter-status" class="filter-status-opts" role="group" aria-label="Filter by status"></div>
     </div>
     <div id="filter-score-panel" class="filter-specs-panel" hidden></div>
+    <!-- The options are rendered from filter.js (Context, Params) and the backend's CAPABILITIES -->
     <div id="filter-specs" class="filter-specs-panel" hidden>
       <div class="filter-group">
         <span class="filter-label">Context</span>
-        <div id="filter-ctx" class="filter-seg" role="group" aria-label="Filter by context window">
-          <button type="button" data-ctx="all" class="active text-text-primary">All</button>
-          <button type="button" data-ctx="0-64k" class="text-text-muted">&le;64K</button>
-          <button type="button" data-ctx="64k-262k" class="text-text-muted">64K&ndash;262K</button>
-          <button type="button" data-ctx="262k-1m" class="text-text-muted">262K&ndash;1M</button>
-          <button type="button" data-ctx="gte1m" class="text-text-muted">&gt;1M</button>
-        </div>
+        <div id="filter-ctx" class="filter-seg" role="group" aria-label="Filter by context window"></div>
       </div>
       <div class="filter-group">
         <span class="filter-label">Params</span>
-        <div id="filter-param" class="filter-seg" role="group" aria-label="Filter by parameter count">
-          <button type="button" data-param="all" class="active text-text-primary">All</button>
-          <button type="button" data-param="lt70" class="text-text-muted">&lt;70B</button>
-          <button type="button" data-param="70-235" class="text-text-muted">70&ndash;235B</button>
-          <button type="button" data-param="235-500" class="text-text-muted">235&ndash;500B</button>
-          <button type="button" data-param="gt500" class="text-text-muted">&gt;500B</button>
-        </div>
+        <div id="filter-param" class="filter-seg" role="group" aria-label="Filter by parameter count"></div>
       </div>
       <div class="filter-group">
         <span class="filter-label">Capabilities</span>
-        <div id="filter-caps" class="filter-caps" role="group" aria-label="Filter by capabilities">
-          <button type="button" class="notif-chip" data-cap="supports_vision">Vision</button>
-          <button type="button" class="notif-chip" data-cap="supports_tools">Tools</button>
-          <button type="button" class="notif-chip" data-cap="thinking">Reasoning</button>
-          <button type="button" class="notif-chip" data-cap="supports_cache">Cache</button>
-          <button type="button" class="notif-chip" data-cap="supports_structured_output">Structured Output</button>
-        </div>
+        <div id="filter-caps" class="filter-caps" role="group" aria-label="Filter by capabilities"></div>
       </div>
     </div>
     <div id="filter-chips" class="filter-chips-row" hidden></div>
@@ -953,19 +972,33 @@
       <button type="button" id="filter-clear" class="filter-clear">Clear all</button>
     </div>
   </div>
-  <div id="provider-sections" class="min-h-[600px]">
-     <div id="skeleton"></div>
+  <div id="filter-empty" class="filter-empty" role="status" hidden>
+    <p class="filter-empty-title">No models match the filters</p>
+    <p class="filter-empty-detail"></p>
+    <button type="button" class="filter-clear" data-clear-all>Clear all filters</button>
+  </div>
+  <div id="load-error" class="load-error" role="alert" hidden>
+    <p class="load-error-title">The dashboard could not load</p>
+    <p class="load-error-detail"></p>
+    <button type="button" id="load-retry" class="filter-clear">Retry</button>
+  </div>
+  <!-- Placeholders until the first data; buildProviderSections replaces them (finding F68) -->
+  <div id="provider-sections" class="min-h-[600px]" tabindex="-1" aria-busy="true">
+    <div id="skeleton" class="grid gap-2.5 pt-2 pl-2 pr-1.5" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
+      <p class="sr-only" role="status">Loading models</p>
+      <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+    </div>
   </div>
 </main>
 
 <footer class="float-bar border-t border-border-default bottom-0">
   <div class="float-bar-inner justify-center text-center w-full">
-    <span class="text-xs text-text-faint">&copy; 2026 __APP_NAME__ &mdash; MIT License</span>
+    <span class="text-xs text-text-faint">&copy; 2026 __APP_NAME__ - MIT License</span>
   </div>
 </footer>
 
 
-<div id="modal" class="fixed inset-0 bg-overlay-bg z-50 hidden items-center justify-center p-1 sm:p-4" role="dialog" aria-modal="true" aria-label="Model details">
+<div id="modal" class="fixed inset-0 bg-overlay-bg hidden items-center justify-center p-1 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="modal-title">
   <div id="modal-decor" class="max-w-4xl w-full relative rounded-2xl">
     <div id="modal-panel" class="bg-raised rounded-2xl flex flex-col overflow-hidden max-h-[90vh]">
       <div class="modal-header-row">
@@ -986,15 +1019,15 @@
 </div>
 
 <div id="help-backdrop"></div>
-<div id="help-panel" role="dialog" aria-modal="true" aria-label="Help & reference">
+<div id="help-panel" role="dialog" aria-modal="true" aria-label="Help & reference" inert>
   <div class="help-drag-handle"></div>
   <div class="help-header">
     <h2>Help & Reference</h2>
     <button class="help-close-btn" aria-label="Close help panel">&times;</button>
   </div>
   <div class="help-tab-bar">
-    <button class="help-tab active" data-tab="legend">Legend</button>
-    <button class="help-tab" data-tab="glossary">Glossary</button>
+    <button type="button" class="help-tab active" data-tab="legend" aria-selected="true">Legend</button>
+    <button type="button" class="help-tab" data-tab="glossary" aria-selected="false">Glossary</button>
   </div>
   <div class="help-body">
     <div id="help-tab-legend" class="help-tab-content active">
@@ -1002,7 +1035,6 @@
     </div>
     <div id="help-tab-glossary" class="help-tab-content">
       <div id="help-glossary-content"></div>
-    </div>
     </div>
   </div>
 </div>

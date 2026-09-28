@@ -1,6 +1,7 @@
 // Pure helpers + shared UI primitives (leaf node - zero imports from other modules).
 // Exports HELP dict, logging, HTML escaping, status glyphs, segment/separator markup,
-// collapsible system, touch detection. Touches no DOM at import, so node --test can load it.
+// collapsible system, overlay layers and focus trapping, storage sweep, colour parsing,
+// touch detection. Touches no DOM at import, so node --test can load it.
 
 // One glyph per outcome, for every status mark the UI draws (check line, badges, history, notifications)
 export const STATUS_GLYPH = { ok: '\u2713', degraded: '\u26a0', failed: '\u2717', unknown: '\u25cb' };
@@ -20,7 +21,9 @@ export function sepHTML(kind) {
 // A row of segments whose spacing comes only from the .seg-list flex gap. A nested group
 // must itself be a segmentsHTML() list, never a plain wrapper: a plain wrapper is one flex
 // item whose children lay out inline with no gap at all (finding F6, "·OK10h 8m").
-// The spaces between items are not rendered by flex layout; they keep copied text readable.
+// The spaces between items are not rendered by flex layout. They keep the text content (and the
+// accessible names built from it) separated; a selection copy of a flex row puts each item on its
+// own line instead, as flex items are blocks (finding F31).
 export function segmentsHTML(parts, { sep = null, cls = '', attrs = '' } = {}) {
   const items = parts.filter(Boolean);
   if (!items.length) return '';
@@ -32,10 +35,8 @@ export const HELP = {
   models: 'Total models being monitored.<br>Updated when config changes.',
   online: 'Models responding successfully.<br>Refreshed after each benchmark run.',
   testing: 'Models currently running a benchmark.<br>Tests run sequentially within each provider.',
-  errors: 'Models that failed their most recent test.<br>Click a card for error details.',
-  offline: 'Model is offline - the most recent test failed to get a response.<br>Hover for the error message.',
-  degraded: 'Model is degraded - performance below acceptable thresholds.<br>Causes:<br>\u2022 Critical tier \u2014 one or more metrics at worst level<br>\u2022 Stream error \u2014 stream interrupted after tokens<br>\u2022 Insufficient output \u2014 too few tokens for reliable metrics',
-  degraded_critical_tier: 'One or more metrics reached the Critical (worst) tier, indicating severely degraded performance.<br>Look for the underlined values.',
+  error: 'Model is offline: the most recent test failed to get a response, or its last benchmark failed.<br>Hover for the error message.',
+  unknown: 'Model has no test result yet.',
   degraded_stream_error: 'The stream was interrupted by an error after tokens were received.<br>Metrics are computed from the partial output.',
   degraded_insufficient_output: 'The model produced output but below the minimum threshold for reliable metrics.<br>The stream completed but with too few tokens or chunks.',
   ws_connected: 'Connected - receiving live updates.<br>Results appear instantly when tests complete.',
@@ -45,14 +46,13 @@ export const HELP = {
   ws_busy: 'Server is at its connection limit - retrying.<br>Data still refreshes periodically meanwhile.',
   ws_rejected: 'Live updates refused: the server does not accept connections from this address (origin).<br>Data still refreshes periodically. Ask the operator to add it to websocket.allowed_origins.',
   ws_down: 'Server unreachable - will retry automatically when connection is restored.',
+  ws_unconfigured: 'This page came without its settings from the server (the server may be updating).<br>Reload the page.',
   ttft: 'Delay before the model starts generating.<br>For thinking models, this is time to first reasoning token.',
   tps: 'Wall-clock tokens per second (includes stalls and thinking tokens).',
   itlReliable: `Raw ITL metrics are trustworthy measurements.<br>${STATUS_GLYPH.ok} = shrinkage OK, low burst, enough samples.`,
   uptime: 'Successful test percentage over recent runs.',
-  stall: 'Pause over 500ms between words.',
   chunkCv: 'Coefficient of variation of per-chunk token counts.<br>Low CV = uniform chunks (reliable ITL). High CV = uneven chunks (ITL less meaningful).',
   testType: 'Test type: health check (reachability + TTFT only) or benchmark (full streaming).',
-  consistency: 'Output smoothness based on stalls, tail ratio, batching, and chunk CV.',
   p99Itl: 'Worst gap you regularly experience (99th percentile).<br>Computed from raw (unnormalized) inter-chunk latencies.',
   medianItl: 'Typical gap between tokens (raw, unnormalized).',
   maxItl: 'Single longest gap between tokens (raw, unnormalized).',
@@ -61,7 +61,6 @@ export const HELP = {
   chunksObserved: 'Number of SSE chunks received from the provider.<br>Each chunk may contain one or more tokens.',
   maxChunk: 'Largest token count in a single SSE chunk (via tiktoken).',
   finishReason: 'Why the model stopped generating.<br>"length" = hit token limit. "stop" = model chose to stop.',
-  hiccups: 'Inter-chunk gaps exceeding 3× the median ITL (adaptive threshold).<br>Less severe than stalls but indicate uneven delivery.',
   avgItl: 'Mean inter-chunk latency.',
   tpot: 'Time per output token - generation time divided by (tokens − 1).<br>Excludes first token, more reliable for cross-provider comparison than TPS.',
   totalLatency: 'Wall-clock time from request start to last token received.',
@@ -82,36 +81,39 @@ export const HELP = {
   shrinkage: 'How much ITL extremes were pulled toward the median (0-1).<br>1.0 = no adjustment. 0.0 = fully smoothed (very high jitter).',
   errorMsg: 'Error message for failed test requests.<br>Click to expand full stack trace.',
   retry: 'A retry attempt. Each retry appears as its own history entry with the error that triggered it. Only the final attempt determines the model\'s status.',
-  statusLegend: 'Current health of monitored models. Counts update live as tests complete.',
+  statusLegend: 'Current health of monitored models, with the number of models in each state.<br>Counts update live as tests complete.',
   performanceLegend: 'Metric tier color scale. Higher tiers (top) = better performance.',
   freshnessLegend: 'How recently the model was tested. Based on time since last check.',
-  scores: 'Composite performance scores based on consistency, speed, and reliability trends.<br>C = Consistency (ITL tail, batching, stalls)<br>S = Speed (TPS trend)<br>R = Reliability (uptime trend)<br>↑↓ = direction since the shown timeframe.',
-  chartSpeed: 'Speed view - TPS (tokens/second) and TTFT (time to first token) over time.',
-  chartConsistency: 'Consistency view - P99 ITL (raw, worst regular gap) and batching ratio over time.',
-  chartScores: 'Score view - Consistency, Speed, and Reliability composite scores (0-100) over time.',
-  chartHealth: 'Health view - TTFT from lightweight reachability checks over time.',
+  chart_speed: 'Speed view: TPS (tokens/second) and TTFT (time to first token) of benchmarks over time.',
+  chart_consistency: 'Consistency view: P99 ITL (raw, worst regular gap) and batching ratio over time.',
+  chart_scores: 'Score view: Consistency, Speed, and Reliability composite scores (0-100) over time.',
+  chart_health: 'Health view: TTFT from lightweight reachability checks over time, with failed and degraded tests marked.',
   jumpToBtn: 'Jump to this date in history.',
-  collapseDay: 'Click a day header to collapse or expand its rows.',
+  collapseDay: 'Collapse or expand the rows of this day.',
   customDateRange: 'Select a custom date range.',
   toggleColumns: 'Show or hide extra columns (P99 ITL (raw), Batch, Tail (eff.), Jitter).',
   modelInfo: 'Model metadata from the provider API. Click the card for full details.',
-  capabilities: 'Model capabilities:<br>\u2022 Thinking \u2014 chain-of-thought reasoning<br>\u2022 Vision \u2014 image understanding<br>\u2022 Tools \u2014 function/tool calling<br>\u2022 Cache \u2014 prompt caching<br>\u2022 JSON \u2014 structured output',
-  themeToggle: 'Switch between light and dark theme.<br>Sets preference for this browser.',
+  themeToggle: 'Theme: follow the system, light or dark.<br>Click to switch to the next one; the choice is kept in this browser.',
   notifyToggle: 'Notification settings and recent alerts.<br>Open the panel to view history or configure event filters and push delivery.',
   notifSettings: 'Open settings panel.<br>Configure notification event filters, push delivery, and per-provider alerts.',
   helpToggle: 'Help, glossary, and reference panel.<br>Metric explanations and status legends.',
   archived: 'This model or provider is archived. Archived models are not tested but historical data is preserved.',
+  schedule: 'How often each check runs. Ages in the model details are colored against these intervals.',
+  schedulePaused: 'The server runs no tests right now (started with MW_DISABLE_TESTS, or its scheduler stopped).<br>The data shown is the last recorded.',
 };
 
-const _P = () => (globalThis.__APP_NAME__ || 'ModelWatcher') + ':';
-const _LL = () => globalThis.__LOG_LEVEL__ ?? 2;  // 0=debug, 1=info, 2=warn, 3=error
+// Logging needs no bootstrap: it has to report a page that came without one (finding F32).
+// Levels are backend/state.py LOG_LEVELS indexes: 0=debug, 1=info, 2=warn, 3=error.
+const _LOG_LEVEL_WITHOUT_BOOT = 2;
+const _P = () => { const name = globalThis.__MW_BOOT__?.app_name; return name ? `${name}: ` : ''; };
+const _LL = () => globalThis.__MW_BOOT__?.log_level ?? _LOG_LEVEL_WITHOUT_BOOT;
 const _fmt = (s, a) => { let i = 0; return s.replace(/%[sdfo]/g, () => a[i++] ?? ''); };
 
-export function logDebug(ctx, ...args) { if (_LL() <= 0) console.debug(_P() + ' ' + _fmt(ctx, args)); }
-export function logInfo(ctx, ...args)  { if (_LL() <= 1) console.info(_P() + ' ' + _fmt(ctx, args)); }
-export function logWarn(ctx, ...args)  { if (_LL() <= 2) console.warn(_P() + ' ' + _fmt(ctx, args)); }
+export function logDebug(ctx, ...args) { if (_LL() <= 0) console.debug(_P() + _fmt(ctx, args)); }
+export function logInfo(ctx, ...args)  { if (_LL() <= 1) console.info(_P() + _fmt(ctx, args)); }
+export function logWarn(ctx, ...args)  { if (_LL() <= 2) console.warn(_P() + _fmt(ctx, args)); }
 export function logError(ctx, err) {
-  console.error(_P() + ' ' + ctx, err instanceof Error ? err : err ?? '');
+  console.error(_P() + ctx, err instanceof Error ? err : err ?? '');
 }
 
 const _errTS = { last: 0, count: 0 };
@@ -131,6 +133,9 @@ export function reportClientError(payload) {
 }
 
 export function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+// The item after `current` in `list`, wrapping around (the theme button cycles its preferences)
+export function nextInCycle(list, current) { return list[(list.indexOf(current) + 1) % list.length]; }
 
 // Shared colored dot HTML - used by help legends, filter status options, etc.
 const _DOT_SIZE = { 2: 'w-2 h-2', 2.5: 'w-2.5 h-2.5', 3: 'w-3 h-3' };
@@ -159,12 +164,6 @@ export function logTag(comp, dir, type, ...rest) {
 }
 
 export function slug(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
-
-export function parseModelKey(mk) {
-  const idx = mk.indexOf('::');
-  if (idx < 0) return { provider: '', model: mk };
-  return { provider: mk.slice(0, idx), model: mk.slice(idx + 2) };
-}
 
 export function isOK(r) { return r.available != null ? r.available : r.success; }
 
@@ -196,7 +195,114 @@ export function initSheetDrag({ handleSelector, panelId, closeFn, threshold = 60
   });
 }
 
+// The phone breakpoint, the same as Tailwind's `sm` and every (max-width: 639px) rule in index.html
 export const BP_SM = 640;
+
+export function isPhone(width = globalThis.innerWidth) { return width < BP_SM; }
+
+// Overlay layers (the modal, the date picker, filter dropdowns, Help, notifications). The one
+// Escape listener (app.js) closes only the top layer (finding F49); listeners learn about a new
+// layer so a tooltip never stays above what just opened (F53).
+const _layers = [];
+const _layerOpenListeners = [];
+
+// Register an open layer; returns a handle that removes it (safe to call more than once)
+export function pushLayer(close) {
+  const layer = { close };
+  _layers.push(layer);
+  for (const fn of _layerOpenListeners) fn();
+  return () => { const i = _layers.indexOf(layer); if (i >= 0) _layers.splice(i, 1); };
+}
+
+// Close the top layer; false when none is open
+export function closeTopLayer() {
+  const layer = _layers.pop();
+  if (!layer) return false;
+  layer.close();
+  return true;
+}
+
+export function openLayerCount() { return _layers.length; }
+
+export function onLayerOpen(fn) { _layerOpenListeners.push(fn); }
+
+// A modal layer takes focus and makes the rest of the page inert and unscrollable; the returned
+// release restores all three, focus back to what had it (findings F72, F73)
+let _scrollLocks = 0;
+
+export function trapFocus(dialog, { focus = dialog, keep = [], returnTo = document.activeElement } = {}) {
+  const trigger = returnTo;
+  const others = [...document.body.children].filter(el => el !== dialog && !el.contains(dialog) && !keep.includes(el) && !el.inert);
+  for (const el of others) el.inert = true;
+  if (_scrollLocks++ === 0) document.documentElement.classList.add('scroll-locked');
+  focus.focus({ preventScroll: true });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const el of others) el.inert = false;
+    if (--_scrollLocks === 0) document.documentElement.classList.remove('scroll-locked');
+    if (trigger?.isConnected && typeof trigger.focus === 'function') trigger.focus({ preventScroll: true });
+  };
+}
+
+// Remove every key under the prefix that the registry no longer lists: renamed and retired
+// settings leave nothing behind, with no list of old names to keep (finding F19)
+export function pruneStorage(storage, keys, prefix) {
+  const known = new Set(Object.values(keys));
+  const stale = [];
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k.startsWith(prefix) && !known.has(k)) stale.push(k);
+  }
+  for (const k of stale) storage.removeItem(k);
+  return stale;
+}
+
+// CSS colour to [r, g, b, a] (0-255 channels, 0-1 alpha). Hex and rgb()/rgba() are parsed
+// here; any other form (oklch(), hsl(), color-mix(), names) goes to the resolver the page
+// installs (a canvas round trip in theme.js). A colour nothing can read is logged once and
+// gives null, never a silently grey or NaN colour (finding F83).
+const _HEX_RE = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const _RGB_RE = /^rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i;
+const _colorCache = new Map();
+let _colorResolver = null;
+
+export function setColorResolver(fn) { _colorResolver = fn; _colorCache.clear(); }
+
+function _channel(v) { return v.endsWith('%') ? Math.round(parseFloat(v) * 2.55) : Math.round(parseFloat(v)); }
+function _alpha(v) { return v == null ? 1 : v.endsWith('%') ? parseFloat(v) / 100 : parseFloat(v); }
+
+function _parseColor(css) {
+  const hex = _HEX_RE.exec(css);
+  if (hex) {
+    let h = hex[1];
+    if (h.length <= 4) h = [...h].map(c => c + c).join('');
+    const n = [0, 2, 4, 6].map(i => (i < h.length ? parseInt(h.slice(i, i + 2), 16) : 255));
+    return [n[0], n[1], n[2], n[3] / 255];
+  }
+  const rgb = _RGB_RE.exec(css);
+  if (rgb) return [_channel(rgb[1]), _channel(rgb[2]), _channel(rgb[3]), _alpha(rgb[4])];
+  return _colorResolver ? _colorResolver(css) : null;
+}
+
+export function parseCssColor(color) {
+  const css = String(color ?? '').trim();
+  if (!_colorCache.has(css)) {
+    const rgba = css ? _parseColor(css) : null;
+    if (!rgba) logWarn(logTag('Color', 'Err', 'Unreadable', css || '(empty)'));
+    _colorCache.set(css, rgba);
+  }
+  return _colorCache.get(css);
+}
+
+// The colour with its alpha scaled by `alpha`, as rgba(); null when it cannot be read
+export function withAlpha(color, alpha) {
+  const rgba = parseCssColor(color);
+  if (!rgba) return null;
+  const a = Math.min(1, Math.max(0, rgba[3] * alpha));
+  return `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${+a.toFixed(3)})`;
+}
 
 const _CHEVRON_PATH = 'M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z';
 
@@ -210,7 +316,7 @@ export function collapsibleHTML({ id, title, bodyHTML, open = false, tipKey, btn
   const extraBtnCls = btnCls ? ` ${btnCls}` : '';
   const extraWrapCls = wrapperCls ? ` ${wrapperCls}` : '';
   return `<div class="acc-section${extraWrapCls}"${id ? ` data-section="${id}"` : ''}>
-  <button class="acc-btn${extraBtnCls}" data-state="${stateAttr}" aria-expanded="${open}" tabindex="0"${tipAttr}>
+  <button type="button"${id ? ` id="acc-${id}"` : ''} class="acc-btn${extraBtnCls}" data-state="${stateAttr}" aria-expanded="${open}"${tipAttr}>
     ${chevronSVG()}<span>${esc(title)}</span>
   </button>
   <div class="acc-body" data-state="${stateAttr}"${id ? ` role="region" aria-labelledby="acc-${id}"` : ''}><div>${bodyHTML}</div></div>

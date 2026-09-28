@@ -65,7 +65,8 @@ class WSManager:
         async with self._lock:
             if len(self.connections) >= c.max_connections:
                 return False
-            await ws.send_text(orjson.dumps({"type": "hello", "config": connection_config()}).decode())
+            await ws.send_text(orjson.dumps({"type": "hello", "config": connection_config(),
+                                             "scheduler": st.scheduler_state()}).decode())
             self.connections.append(ws)
             return True
 

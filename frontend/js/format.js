@@ -2,7 +2,7 @@
 // here: tier colors (explicit class maps for Tailwind v4 scanning), formatted
 // HTML with styled unit spans, freshness tiers, and score/trend display.
 import { state } from './state.js';
-import { esc, SEP_TEXT, TIER_DOT } from './utils.js';
+import { esc, SEP_TEXT, TIER_DOT, HELP, STATUS_GLYPH } from './utils.js';
 
 const TIER_KEYS = ['accent-400', 'success-400', 'warn-400', 'danger-400', 'danger-700', 'teal-400'];
 
@@ -51,18 +51,47 @@ export const FRESHNESS_TIERS = [
 
 const FRESHNESS_TEXT = FRESHNESS_TIERS.map(t => t.text);
 
+// Ratios of age to check interval from app.yaml ui.freshness (finding F20)
 function freshnessTier(ageSeconds, intervalSeconds) {
   if (ageSeconds == null || !intervalSeconds || intervalSeconds <= 0) return -1;
   if (ageSeconds < 0) return 0;
   const ratio = ageSeconds / intervalSeconds;
-  if (ratio <= 1.5) return 0;
-  if (ratio <= 3.0) return 1;
+  const { aging_ratio: aging, stale_ratio: stale } = state.ui.freshness;
+  if (ratio <= aging) return 0;
+  if (ratio <= stale) return 1;
   return 2;
 }
 
-// Test type display names from /api/config (backend/state.py TEST_TYPE_LABELS); empty until config arrives
+// Display names from /api/config (backend/state.py); empty until config arrives, never guessed
+
 export function testTypeLabel(type, form = 'full') {
   return state.testTypeLabels[type]?.[form] ?? '';
+}
+
+export function statusLabel(status) { return state.statusLabels[status] ?? ''; }
+
+// Models running a benchmark right now: an activity next to the statuses, labelled here once
+export const TESTING_LABEL = 'Testing';
+
+// form 'short' where space is tight (card tiles, table columns): METRIC_SHORT_LABELS
+export function metricLabel(metric, form = 'full') {
+  return (form === 'short' ? state.metricShortLabels : state.metricLabels)[metric] ?? '';
+}
+
+export function chartViewLabel(view) { return state.chartViewLabels[view] ?? ''; }
+
+// The chart views in order, with their label and Help tip key (finding F80)
+export function chartViews() {
+  return state.chartViews.map(key => ({ key, label: chartViewLabel(key), tip: `chart_${key}` }));
+}
+
+// Capabilities a model has, in the backend's order (backend/state.py CAPABILITIES, finding F76)
+export function modelCapabilities(entry) {
+  return state.capabilities.filter(cap => entry?.[cap.key]);
+}
+
+export function capabilityLinesHTML(caps) {
+  return caps.map(cap => `\u2022 ${esc(cap.label)}: ${esc(cap.desc)}`).join('<br>');
 }
 
 export function freshnessTextCls(ageSeconds, intervalSeconds) {
@@ -94,7 +123,7 @@ export function _tierColor(metric, value) {
 
 const _TIP_TO_METRIC = {
   ttft: 'ttft', tps: 'tps', uptime: 'uptime',
-  stall: 'stall_count', consistency: 'effective_itl_tail_ratio',
+  stall: 'stall_count',
   p99Itl: 'raw_p99_itl_ms', medianItl: 'raw_median_itl_ms', maxItl: 'raw_max_itl_ms',
   itlTailRatio: 'effective_itl_tail_ratio', batching: 'chunk_token_ratio',
   burstArrival: 'burst_arrival_pct', chunkCv: 'chunk_token_cv',
@@ -102,34 +131,38 @@ const _TIP_TO_METRIC = {
 
 function _tierDotHTML(colorCls) { return `<span class="${colorCls}">${TIER_DOT}</span>`; }
 
+// A threshold in its metric's unit, as tier tips and the score filter print it
+export function fmtThreshold(metric, v) {
+  if (metric === 'stall_count' || metric === 'tps' || metric === 'chunk_token_cv') return String(v);
+  if (metric === 'uptime' || metric === 'burst_arrival_pct' || metric === 'scores') return `${v}%`;
+  if (metric === 'effective_itl_tail_ratio' || metric === 'chunk_token_ratio') return `${v}\u00d7`;
+  return v >= 1000 ? `${v / 1000}s` : `${v}ms`;
+}
+
+// The value range of each tier of a metric, best first: "\u226580%", "60-80%", ..., "<20%"
+export function tierRangeLabels(metric) {
+  const cfg = state.colorThresholds[metric];
+  if (!cfg?.thresholds) return [];
+  const ts = cfg.thresholds;
+  const f = v => fmtThreshold(metric, v);
+  // "60-80%" rather than "60%-80%" when both ends share a unit
+  const range = (lo, hi) => {
+    const a = f(lo), b = f(hi), unit = b.replace(/^[\d.]+/, '');
+    return unit && a.endsWith(unit) ? `${a.slice(0, -unit.length)}-${b}` : `${a}-${b}`;
+  };
+  if (cfg.higher_is_better) {
+    return ts.map((t, i) => i === 0 ? `\u2265${f(t)}` : i === ts.length - 1 ? `<${f(ts[i - 1])}` : range(t, ts[i - 1]));
+  }
+  return ts.map((t, i) => i === 0 ? `<${f(t)}` : i === ts.length - 1 ? `\u2265${f(ts[i - 1])}` : range(ts[i - 1], t));
+}
+
 export function tierScaleHTML(tipKey) {
   const metric = _TIP_TO_METRIC[tipKey];
   if (!metric) return '';
-  const cfg = state.colorThresholds[metric];
-  if (!cfg || !cfg.thresholds) return '';
   const tiers = state.colorThresholds.tiers;
-  const ts = cfg.thresholds;
-  const ge = cfg.higher_is_better;
-  const parts = [];
-  const _fmt = (v) => {
-    if (metric === 'stall_count') return String(v);
-    if (metric === 'uptime') return `${v}%`;
-    if (metric === 'tps') return String(v);
-    if (metric === 'effective_itl_tail_ratio') return `${v}×`;
-    if (metric === 'chunk_token_ratio') return `${v}×`;
-    if (metric === 'burst_arrival_pct') return `${v}%`;
-    if (metric === 'total_latency_ms') return v >= 1000 ? `${v / 1000}s` : `${v}ms`;
-    if (metric === 'ttft') return v >= 1000 ? `${v / 1000}s` : `${v}ms`;
-    return `${v}ms`;
-  };
-  for (let i = 0; i < tiers.length && i < ts.length; i++) {
-    const colorCls = TIER_TEXT[tiers[i].color] || 'text-text-secondary';
-    const boundary = ts[i];
-    const prefix = ge ? '≥' : '<';
-    const label = i < ts.length - 1 ? `${prefix}${_fmt(boundary)}` : (i > 0 ? `${ge ? '<' : '≥'}${_fmt(ts[i - 1])}` : '');
-    parts.push(`${_tierDotHTML(colorCls)} ${label}`);
-  }
-  return '<br>' + parts.join(' ');
+  const labels = tierRangeLabels(metric);
+  if (!tiers || !labels.length) return '';
+  return '<br>' + labels.map((label, i) => `${_tierDotHTML(TIER_TEXT[tiers[i]?.color] || 'text-text-secondary')} ${label}`).join(' ');
 }
 
 export function tpsColor(t) { return _tierColor('tps', t); }
@@ -141,23 +174,11 @@ export function tailColor(r) { return _tierColor('effective_itl_tail_ratio', r);
 export function batchingColor(r) { return _tierColor('chunk_token_ratio', r); }
 export function stallColor(n) { return _tierColor('stall_count', n); }
 
-export const SCORE_TIERS = [
-  { min: 80, key: 'accent-400', label: 'Excellent' },
-  { min: 60, key: 'success-400', label: 'Good' },
-  { min: 40, key: 'warn-400', label: 'OK' },
-  { min: 20, key: 'danger-400', label: 'Bad' },
-  { min: 0, key: 'danger-700', label: 'Critical' },
-];
-
-function scoreTierKey(score) {
-  if (score == null) return null;
-  for (const t of SCORE_TIERS) if (score >= t.min) return t.key;
-  return 'danger-700';
-}
+// Composite scores use the color_thresholds.scores tiers from app.yaml (finding F81)
+export function scoreTierIdx(score) { return _tierIdx('scores', score); }
 
 export function scoreColor(score) {
-  const k = scoreTierKey(score);
-  return k ? TIER_TEXT[k] : 'text-text-muted';
+  return score == null ? 'text-text-muted' : _tierColor('scores', score);
 }
 
 export function trendArrow(trend) {
@@ -184,11 +205,14 @@ export function trendDelta(trend) {
   return `\u00b10.0 ${unit}`.trim();
 }
 
+// The one Critical marker: values, notifications and the Help legend (finding F50)
+export function criticalMarkHTML(html) { return `<span class="critical-mark">${html}</span>`; }
+
 export function fmtCritical(metric, value, formattedText) {
   if (value == null || formattedText == null) return formattedText;
   const tiers = state.colorThresholds?.tiers;
   if (!tiers || _tierIdx(metric, value) !== tiers.length - 1) return formattedText;
-  return `<span class="underline">${formattedText}</span>`;
+  return criticalMarkHTML(formattedText);
 }
 
 export function fmtNum(n, dec = 1) { return n != null ? Number(n).toFixed(dec) : '--'; }
@@ -396,20 +420,81 @@ export function recordErrorText(h) {
   return parts.join(SEP_TEXT);
 }
 
-const _LABEL_COLORS = { tps: '#22d3ee', ttft: '#a78bfa', uptime: '#fb923c', tails: '#f472b6', batching: '#2dd4bf' };
+// Metric tiles, one definition for card and modal: same value, label and colours for the same
+// metric everywhere (finding F58: the card showed health-check TTFT under the benchmark's label).
+// value(data) reads the model's summary; metric is the METRIC_LABELS and color_thresholds key.
+export const METRIC_TILES = {
+  uptime: { metric: 'uptime', tip: 'uptime', colorVar: 'uptime', value: d => d.uptime_pct, color: v => uptimeColor(v), fmt: v => fmtUptime(v), fromBenchmark: false },
+  tps: { metric: 'tps', tip: 'tps', colorVar: 'tps', value: d => d.last_test?.tps, color: v => tpsColor(v), fmt: v => fmtTps(v), fromBenchmark: true },
+  ttft: { metric: 'ttft', tip: 'ttft', colorVar: 'ttft', value: d => d.last_test?.ttft_ms, color: v => ttftColor(v), fmt: v => fmtTTFT(v), fromBenchmark: true },
+  p99: { metric: 'raw_p99_itl_ms', tip: 'p99Itl', colorVar: 'tails', value: d => d.last_test?.raw_p99_itl_ms, color: v => p99ItlColor(v), fmt: v => fmtMsCompact(v), fromBenchmark: true },
+  stalls: { metric: 'stall_count', tip: 'stall', value: d => d.last_test?.stall_count || null, color: v => stallColor(v), fmt: v => String(v), fromBenchmark: true },
+  tail: { metric: 'effective_itl_tail_ratio', tip: 'itlTailRatio', value: d => d.last_test?.effective_itl_tail_ratio, color: v => tailColor(v), fmt: v => fmtTail(v), fromBenchmark: true },
+  batch: { metric: 'chunk_token_ratio', tip: 'batching', value: d => d.last_test?.chunk_token_ratio, color: v => batchingColor(v), fmt: v => fmtBatching(v), fromBenchmark: true },
+  jitter: { metric: 'network_jitter_ms', tip: 'networkJitter', value: d => d.last_test?.network_jitter_ms, color: () => 'text-text-primary', fmt: v => fmtMsCompact(v), fromBenchmark: true },
+};
+
+// The model's id under its name, only when it says something the name does not (finding F92:
+// a display name that defaults to the id printed it twice)
+export function secondaryModelId(entry) {
+  return entry.model_id && entry.model_id !== entry.name ? entry.model_id : '';
+}
+
+// A benchmark metric has no value because the last benchmark failed: say so instead of hiding
+// the tile (finding F59)
+export function lastBenchmarkFailed(data) { return data.last_test?.success === false; }
+
+export function metricTileHTML(key, data, { mode = 'card', form = 'full', id = '', extra = '' } = {}) {
+  const t = METRIC_TILES[key];
+  const v = t.value(data);
+  const failed = v == null && t.fromBenchmark && lastBenchmarkFailed(data);
+  const valueHTML = v != null ? fmtCritical(t.metric, v, t.fmt(v)) : failed ? `<span class="text-text-muted">${STATUS_GLYPH.failed}</span>` : '-';
+  return metricCellHTML({
+    label: esc(metricLabel(t.metric, form)), tipKey: failed ? 'lastBenchmarkFailed' : t.tip, colorVar: t.colorVar,
+    valueCls: v != null ? t.color(v) : '', valueHTML, id, mode, extra,
+    wrapperCls: v == null && !failed ? 'hidden' : '',
+  });
+}
 
 export function metricCellHTML({ label, tipKey, colorVar, valueCls, valueHTML, id, mode = 'card', extra = '', wrapperCls: wrapperOverride = '' }) {
   const isCard = mode === 'card';
   const _baseWrapperCls = isCard ? '' : 'bg-overlay rounded-lg p-2';
   const wrapperCls = wrapperOverride || _baseWrapperCls;
-  const valSizeCls = 'text-base';
-  const labelSpacing = 'mb-0.5';
-  const labelCls = `text-[10px] uppercase tracking-wider ${labelSpacing} tip-label`;
-  const colorStyle = colorVar ? `style="color:var(--chart-label-cc-${colorVar}, ${_LABEL_COLORS[colorVar] || ''})"` : '';
+  const labelCls = 'text-[10px] uppercase tracking-wider mb-0.5 tip-label';
+  const colorStyle = colorVar ? ` style="color:var(--chart-label-cc-${colorVar})"` : '';
   const idAttr = id ? ` id="${id}"` : '';
-  return `<div class="${wrapperCls}" data-tip="${tipKey}" tabindex="0">
-    <div class="${labelCls}" ${colorStyle}>${label}${extra}</div>
-    <div${idAttr} class="${valSizeCls} font-bold ${valueCls}">${valueHTML}</div>
+  // Card tiles are no tab stops of their own: the card's button opens the details (finding F74)
+  const focus = isCard ? '' : ' tabindex="0"';
+  return `<div class="${wrapperCls}" data-tip="${tipKey}"${focus}>
+    <div class="${labelCls}"${colorStyle}>${label}${extra}</div>
+    <div${idAttr} class="text-base font-bold ${valueCls}">${valueHTML}</div>
   </div>`;
 }
+
+// ── Help texts that state configured values (finding F78) ───────────────────
+// Everything else is in utils.js HELP; these read /api/config, so the numbers are the configured ones.
+
+function _weightsList(weights) {
+  return Object.keys(weights).map(k => esc(metricLabel(k === 'ttft_ms' ? 'ttft' : k))).join(', ');
+}
+
+const _HELP_FROM_CONFIG = {
+  stall: () => state.stalls && `Pause longer than ${state.stalls.visible_threshold_ms}ms between chunks (plus the provider's network jitter, or half its round trip when jitter is unknown).`,
+  hiccups: () => state.stalls && `Inter-chunk gaps longer than ${state.stalls.hiccup_multiplier}\u00d7 the median ITL (adaptive threshold).<br>Less severe than stalls but indicate uneven delivery.`,
+  consistency: () => state.scoreWeights && `Consistency score: output smoothness from ${_weightsList(state.scoreWeights.consistency)}, each scored by its tier.`,
+  scores: () => state.scoreWeights && `Composite scores (0-100) of recent tests, each metric scored by its tier:<br>C = Consistency (${_weightsList(state.scoreWeights.consistency)})<br>S = Speed (${_weightsList(state.scoreWeights.speed)})<br>R = Reliability (uptime, scaled by the share of benchmarks that were not degraded)<br>\u2191\u2193 = trend: the last part of the window against the part before it.`,
+  degraded: () => state.degradedCriticalMetrics != null && `Model is degraded: performance below acceptable thresholds.<br>Causes:<br>\u2022 Critical tier: ${state.degradedCriticalMetrics} or more metrics at the worst tier<br>\u2022 Stream error: stream interrupted after tokens<br>\u2022 Insufficient output: too few tokens for reliable metrics<br>\u2022 Last benchmark failed while health checks pass`,
+  degraded_critical_tier: () => state.degradedCriticalMetrics != null && `${state.degradedCriticalMetrics} or more metrics reached the Critical (worst) tier, indicating severely degraded performance.<br>Critical values are underlined.`,
+  capabilities: () => state.capabilities.length > 0 && `Model capabilities:<br>${capabilityLinesHTML(state.capabilities)}`,
+  lastBenchmarkFailed: () => 'The last benchmark failed, so this metric has no current value.<br>Open the card for the error.',
+};
+
+// A Help text by key: the configured ones above, else the static HELP entry; '' when neither has it
+export function helpText(key) {
+  const fromConfig = _HELP_FROM_CONFIG[key];
+  if (fromConfig) return fromConfig() || '';
+  return HELP[key] ?? '';
+}
+
+export function isHelpKey(key) { return key in _HELP_FROM_CONFIG || key in HELP; }
 

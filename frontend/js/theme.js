@@ -1,33 +1,59 @@
-// Light/dark theme toggle. Chart colors are read from CSS custom properties
-// so they stay in sync with the active theme without hardcoding hex values.
-import { state, CC } from './state.js';
+// Theme preference (follow the system, light or dark) and the chart colours read from CSS custom
+// properties, so charts follow the active theme without hex values of their own (finding F82).
+import { state, BOOT, LS } from './state.js';
+import { nextInCycle, cap, setColorResolver, logTag, logWarn } from './utils.js';
 
-const STORAGE_KEY = 'mw_theme';
 const _systemMql = window.matchMedia('(prefers-color-scheme: dark)');
 const _CHART_BATCH = 5;
+// The stored preference cycles through these; null (no stored value) follows the system (F56)
+const _PREFS = () => [null, ...BOOT.themes];
+const _DARK = () => BOOT.themes[1];
 
-function isDark() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === 'dark') return true;
-  if (stored === 'light') return false;
-  return _systemMql.matches;
+function _storedPref() {
+  const v = localStorage.getItem(LS.THEME);
+  return _PREFS().includes(v) ? v : null;
 }
 
+function isDark() {
+  const pref = _storedPref();
+  return pref ? pref === _DARK() : _systemMql.matches;
+}
+
+const _prefLabel = pref => (pref ? cap(pref) : 'System');
+
 let _ccCache = null;
+
+// The page's own colour parser for forms utils.js does not read itself (oklch(), hsl(), names):
+// one pixel drawn and read back (finding F83)
+let _probeCtx = null;
+function _canvasColor(css) {
+  _probeCtx ??= document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const ctx = _probeCtx;
+  // An invalid value leaves fillStyle unchanged, so two different sentinels tell it apart
+  ctx.fillStyle = 'black';
+  ctx.fillStyle = css;
+  const first = ctx.fillStyle;
+  ctx.fillStyle = 'white';
+  ctx.fillStyle = css;
+  if (ctx.fillStyle !== first) return null;
+  ctx.clearRect(0, 0, 1, 1);
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+  return [r, g, b, a / 255];
+}
 
 function _readAllStyles() {
   const s = getComputedStyle(document.documentElement);
   const v = (n) => s.getPropertyValue(n).trim();
-  CC.tps = v('--chart-cc-tps');
-  CC.ttft = v('--chart-cc-ttft');
-  CC.uptime = v('--chart-cc-uptime');
-  CC.tails = v('--chart-cc-tails');
-  CC.batching = v('--chart-cc-batching');
-  CC.scoreC = v('--chart-cc-scoreC');
-  CC.scoreS = v('--chart-cc-scoreS');
-  CC.scoreR = v('--chart-cc-scoreR');
-  const baseColor = v('--color-base');
   _ccCache = {
+    tps: v('--chart-cc-tps'),
+    ttft: v('--chart-cc-ttft'),
+    uptime: v('--chart-cc-uptime'),
+    tails: v('--chart-cc-tails'),
+    batching: v('--chart-cc-batching'),
+    scoreC: v('--chart-cc-scoreC'),
+    scoreS: v('--chart-cc-scoreS'),
+    scoreR: v('--chart-cc-scoreR'),
     tick: v('--color-chart-tick'),
     legend: v('--color-chart-legend'),
     grid: v('--color-chart-grid'),
@@ -46,17 +72,9 @@ function _readAllStyles() {
     zoneBaseDanger: v('--chart-zone-base-danger'),
     zoneBaseDangerDark: v('--chart-zone-base-danger-dark'),
     zoneBaseTeal: v('--chart-zone-base-teal'),
-    bandTps: v('--chart-band-tps'),
-    bandTtft: v('--chart-band-ttft'),
-    bandTails: v('--chart-band-tails'),
-    bandBatching: v('--chart-band-batching'),
-    bandTpsExp: v('--chart-band-tps-exp'),
-    bandTtftExp: v('--chart-band-ttft-exp'),
-    bandTailsExp: v('--chart-band-tails-exp'),
-    bandBatchingExp: v('--chart-band-batching-exp'),
     failure: v('--color-notif-offline'),
     degraded: v('--color-notif-degraded'),
-    baseColor,
+    baseColor: v('--color-base'),
   };
   state._chartColorsDirty = false;
   return _ccCache;
@@ -110,16 +128,24 @@ function updateCharts(batched) {
   }
 }
 
+function _labelButton() {
+  const btn = document.getElementById('theme-btn');
+  if (!btn) return;
+  const pref = _storedPref();
+  const current = pref ? _prefLabel(pref) : `${_prefLabel(null)} (${isDark() ? 'dark' : 'light'})`;
+  btn.dataset.themePref = pref ?? 'system';
+  btn.setAttribute('aria-label', `Theme: ${current}. Switch to ${_prefLabel(nextInCycle(_PREFS(), pref))}`);
+}
+
 function applyTheme(batchCharts) {
   const dark = isDark();
   document.documentElement.classList.toggle('dark', dark);
   state._chartColorsDirty = true;
-  const btn = document.getElementById('theme-btn');
-  if (btn) btn.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+  _labelButton();
   requestAnimationFrame(() => {
     const cc = _readAllStyles();
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = cc.baseColor || (dark ? '#0c1220' : '#f8fafc');
+    if (meta) meta.content = cc.baseColor;
     if (batchCharts) updateCharts(true);
   });
 }
@@ -133,20 +159,28 @@ function _transitionTheme() {
   });
 }
 
-function toggleTheme() {
-  localStorage.setItem(STORAGE_KEY, isDark() ? 'light' : 'dark');
+// System, light, dark, then back to following the system (finding F56: there was no way back)
+function cycleTheme() {
+  const next = nextInCycle(_PREFS(), _storedPref());
+  if (next) localStorage.setItem(LS.THEME, next);
+  else localStorage.removeItem(LS.THEME);
   _transitionTheme();
 }
 
 function initTheme() {
+  setColorResolver(css => {
+    const rgba = _canvasColor(css);
+    if (!rgba) logWarn(logTag('Theme', 'Err', 'Color', css));
+    return rgba;
+  });
   applyTheme();
 
   _systemMql.addEventListener('change', () => {
-    if (!localStorage.getItem(STORAGE_KEY)) _transitionTheme();
+    if (!_storedPref()) _transitionTheme();
   });
 
   const btn = document.getElementById('theme-btn');
-  if (btn) btn.addEventListener('click', toggleTheme);
+  if (btn) btn.addEventListener('click', cycleTheme);
 }
 
 export { chartColors, initTheme };

@@ -14,6 +14,8 @@
 # Required:
 #   enabled   true/false - master toggle for audit tests
 #   interval  How often to run audit tests (seconds or duration string: 6h, 1d, etc.)
+#   max_error_chars     Characters kept of a failed eval's error message
+#   max_response_chars  Characters kept of the model response a failed eval shows
 #   suites    Dict of suite configurations (keyed by suite name)
 #
 # ── Suite fields ────────────────────────────────────────────────────────────
@@ -40,6 +42,9 @@
 audit:
   enabled: true
   interval: 21600        # 6 hours - API compliance changes slowly
+  # Characters kept of a failed eval's error message and of the model response it shows
+  max_error_chars: 300
+  max_response_chars: 4000
 
   suites:
     synbad:

@@ -1,10 +1,11 @@
 // Modal time-range state + date-range picker. Manages chart and history range
-// independently, persists to localStorage, and provides the shared fetch
-// functions (_fetchForRange, _fetchHealthForRange) with a race-guard counter.
-import { state } from './state.js';
-import { logError, logTag } from './utils.js';
+// independently, persists them through ranges.js (keys; bounds only for a custom range), and
+// provides the shared fetch functions (_fetchForRange, _fetchHealthForRange) with a race-guard counter.
+import { state, LS } from './state.js';
+import { logError, logTag, isPhone, pushLayer } from './utils.js';
 import { fetchChartData } from './api.js';
 import { _transformModalBuckets, _calculateBuckets, initChart, updateChartView } from './chart.js';
+import { CUSTOM, rangeWindow, storeRange, storedRange, pickRangeKey, defaultRangeKey, displaySince, isRangeEligible } from './ranges.js';
 
 let _fetchSeq = 0;
 let _chartSince = null;
@@ -15,6 +16,7 @@ let _histRangeKey = null;
 let _timeRange = null;
 let _dateRangePopover = null;
 let _dateRangeClickHandler = null;
+let _popPickerLayer = null;
 let _healthBuckets = null;
 let _openModelKey = null;
 
@@ -39,23 +41,8 @@ export function _localDateISO(val) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export function _isRangeEligible(r, availableRanges) {
-  if (r.key === 'max') return true;
-  return availableRanges.includes(r.key);
-}
-
 export function _sinceForRange(rangeKey) {
-  if (rangeKey === 'max' || !rangeKey) return null;
-  const range = state.timeRanges.find(r => r.key === rangeKey);
-  if (!range || !range.seconds) return null;
-  return (Date.now() / 1000) - range.seconds;
-}
-
-export function _rangeSinceUntil(rangeKey) {
-  if (rangeKey === 'max' || !rangeKey || rangeKey === 'custom') return [null, null];
-  const range = state.timeRanges.find(r => r.key === rangeKey);
-  if (!range || !range.seconds) return [null, null];
-  return [(Date.now() / 1000) - range.seconds, null];
+  return rangeWindow(rangeKey, state.timeRanges)[0];
 }
 
 export function _rangeLabel(since, until) {
@@ -69,32 +56,24 @@ export function _rangeLabel(since, until) {
   return `${from} \u2192 ${to}`;
 }
 
+// The label shows what is listed: the window, or back to the oldest row that scrolling loaded.
+// Neither the window nor storage changes (finding F55).
 export function _updateHistRangeLabel(history) {
   const label = document.getElementById('hist-range-label');
   if (!label) return;
-  if (history && history.length) {
-    const epochs = history.filter(h => h.ts_epoch).map(h => h.ts_epoch);
-    if (epochs.length) {
-      const earliest = Math.min(...epochs);
-      if (_histSince == null || earliest < _histSince) {
-        _histSince = earliest;
-        _lsSetOrRemove('mw_hist_since', _histSince);
-      }
-    }
-  }
-  label.textContent = _rangeLabel(_histSince, _histUntil);
+  label.textContent = _rangeLabel(displaySince(_histSince, history || []), _histUntil);
 }
 
 export function _rangePillsHTML(ranges, activeKey, availableRanges, attrName, showCustom = true) {
-  const isEligible = (r) => _isRangeEligible(r, availableRanges);
+  const isEligible = (r) => isRangeEligible(r, availableRanges);
   let html = ranges.map(r => {
-    const disabled = r.key !== 'max' && !isEligible(r);
+    const disabled = !isEligible(r);
     const active = r.key === activeKey && !disabled;
     if (disabled) return '';
-    return `<button class="chart-view-pill${active ? ' active' : ''}" data-${attrName}="${r.key}">${r.label || r.key}</button>`;
+    return `<button type="button" class="chart-view-pill${active ? ' active' : ''}" data-${attrName}="${r.key}" aria-pressed="${active}">${r.label}</button>`;
   }).join('');
   if (showCustom) {
-    html += `<button class="chart-view-pill${activeKey === 'custom' ? ' active' : ''}" data-${attrName}="custom" data-tip="customDateRange"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="3" width="13" height="11" rx="2"/><path d="M1.5 7h13M5 1v4M11 1v4"/></svg></button>`;
+    html += `<button type="button" class="chart-view-pill${activeKey === CUSTOM ? ' active' : ''}" data-${attrName}="${CUSTOM}" data-tip="customDateRange" aria-label="Custom date range" aria-haspopup="dialog"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="3" width="13" height="11" rx="2"/><path d="M1.5 7h13M5 1v4M11 1v4"/></svg></button>`;
   }
   return html;
 }
@@ -114,22 +93,11 @@ export function _updateRangeUI(activeKey) {
   _updatePillUI('range', activeKey);
 }
 
-export function _lsSetOrRemove(key, value) {
-  if (value != null) localStorage.setItem(key, String(value));
-  else localStorage.removeItem(key);
-}
-
 export function _applyChartRange(rangeKey) {
-  if (rangeKey === _timeRange && rangeKey !== 'custom') return;
+  if (rangeKey === _timeRange && rangeKey !== CUSTOM) return;
   _timeRange = rangeKey;
-  const [since] = _rangeSinceUntil(rangeKey);
-  _chartSince = since;
-  _chartUntil = null;
-  if (rangeKey !== 'custom') {
-    localStorage.setItem('mw_chart_range', rangeKey);
-    localStorage.removeItem('mw_chart_since');
-    localStorage.removeItem('mw_chart_until');
-  }
+  [_chartSince, _chartUntil] = rangeWindow(rangeKey, state.timeRanges);
+  storeRange(localStorage, 'chart', rangeKey);
   _updatePillUI('range', rangeKey);
   _fetchForRange(_openModelKey, rangeKey, state.charts['modal-chart']?._view);
 }
@@ -137,15 +105,8 @@ export function _applyChartRange(rangeKey) {
 export function _applyHistRange(rangeKey) {
   if (rangeKey === _histRangeKey) return;
   _histRangeKey = rangeKey;
-  localStorage.setItem('mw_hist_range', rangeKey);
-  _histSince = null;
-  _histUntil = null;
-  if (rangeKey !== 'max') {
-    const [since] = _rangeSinceUntil(rangeKey);
-    _histSince = since;
-  }
-  _lsSetOrRemove('mw_hist_since', _histSince);
-  _lsSetOrRemove('mw_hist_until', _histUntil);
+  [_histSince, _histUntil] = rangeWindow(rangeKey, state.timeRanges);
+  storeRange(localStorage, 'history', rangeKey);
   const label = document.getElementById('hist-range-label');
   if (label) label.textContent = _rangeLabel(_histSince, _histUntil);
   const histBtn = document.getElementById('hist-custom-range');
@@ -158,24 +119,19 @@ export function _applyCustomRange(since, until, target = 'chart') {
   const curU = target === 'history' ? _histUntil : _chartUntil;
   const sinceSame = (since == null && curS == null) || (since != null && curS != null && _localDateISO(since) === _localDateISO(curS));
   const untilSame = (until == null && curU == null) || (until != null && curU != null && Math.abs(until - curU) < 1);
-  if (sinceSame && untilSame && (target === 'history' || _timeRange === 'custom')) return;
+  if (sinceSame && untilSame && (target === 'history' || _timeRange === CUSTOM)) return;
+  storeRange(localStorage, target, CUSTOM, { since, until });
   if (target === 'chart') {
     _chartSince = since;
     _chartUntil = until;
-    _timeRange = 'custom';
-    localStorage.setItem('mw_chart_range', 'custom');
-    _lsSetOrRemove('mw_chart_since', since);
-    _lsSetOrRemove('mw_chart_until', until);
-    _updatePillUI('range', 'custom');
-    _fetchForRange(_openModelKey, 'custom', state.charts['modal-chart']?._view);
+    _timeRange = CUSTOM;
+    _updatePillUI('range', CUSTOM);
+    _fetchForRange(_openModelKey, CUSTOM, state.charts['modal-chart']?._view);
   }
   if (target === 'history') {
-    _histRangeKey = 'custom';
-    localStorage.setItem('mw_hist_range', 'custom');
+    _histRangeKey = CUSTOM;
     _histSince = since;
     _histUntil = until;
-    _lsSetOrRemove('mw_hist_since', since);
-    _lsSetOrRemove('mw_hist_until', until);
     const label = document.getElementById('hist-range-label');
     if (label) label.textContent = _rangeLabel(_histSince, _histUntil);
     const histBtn = document.getElementById('hist-custom-range');
@@ -187,13 +143,7 @@ export function _applyCustomRange(since, until, target = 'chart') {
 export function _fetchForRange(modelId, rangeKey, view) {
   const seq = ++_fetchSeq;
   if (state._backendDown) return;
-  let since, until;
-  if (rangeKey === 'custom') {
-    since = _chartSince;
-    until = _chartUntil;
-  } else {
-    [since, until] = _rangeSinceUntil(rangeKey);
-  }
+  const [since, until] = rangeKey === CUSTOM ? [_chartSince, _chartUntil] : rangeWindow(rangeKey, state.timeRanges);
   _healthBuckets = null;
   const effectiveView = view || state.charts['modal-chart']?._view || 'speed';
   _setRangeLoading(true);
@@ -202,7 +152,7 @@ export function _fetchForRange(modelId, rangeKey, view) {
     if (!data || _openModelKey !== modelId || _fetchSeq !== seq) return;
     const buckets = _transformModalBuckets(data.buckets);
     if (_modalBucketsFn) _modalBucketsFn(buckets);
-    const curView = localStorage.getItem('mw_chart_view') || 'speed';
+    const curView = localStorage.getItem(LS.CHART_VIEW) || state.chartViews[0];
     const hasChart = !!state.charts['modal-chart'];
     const targetView = (hasChart && curView !== 'health') ? curView : effectiveView;
     if (targetView !== 'health') {
@@ -250,10 +200,20 @@ export function _setRangeLoading(loading) {
 export function _closeDateRangePopover() {
   if (_dateRangePopover) { _dateRangePopover.remove(); _dateRangePopover = null; }
   if (_dateRangeClickHandler) { document.removeEventListener('click', _dateRangeClickHandler); _dateRangeClickHandler = null; }
-  document.removeEventListener('keydown', _dateRangeEscHandler);
+  _popPickerLayer?.();
+  _popPickerLayer = null;
 }
 
-export function _dateRangeEscHandler(e) { if (e.key === 'Escape') { _closeDateRangePopover(); e.stopPropagation(); } }
+// Month and weekday names in the page's language (finding F85: they were English literals next
+// to localised dates); weeks start on Sunday like the grid
+function _calendarNames() {
+  const month = new Intl.DateTimeFormat([], { month: 'long' });
+  const day = new Intl.DateTimeFormat([], { weekday: 'short' });
+  return {
+    months: Array.from({ length: 12 }, (_, m) => month.format(new Date(2024, m, 1))),
+    days: Array.from({ length: 7 }, (_, d) => day.format(new Date(2024, 0, 7 + d))),
+  };
+}
 
 export function _openDateRangePicker(anchorEl, dataStartEpoch, target = 'chart') {
   _closeDateRangePopover();
@@ -275,8 +235,7 @@ export function _openDateRangePicker(anchorEl, dataStartEpoch, target = 'chart')
   pop.setAttribute('role', 'dialog');
   pop.setAttribute('aria-label', 'Select date range');
 
-  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+  const { months: monthNames, days: dayNames } = _calendarNames();
 
   const fmtDate = (iso) => {
     if (!iso) return '';
@@ -376,9 +335,8 @@ export function _openDateRangePicker(anchorEl, dataStartEpoch, target = 'chart')
 
     pop.querySelector('.drp-clear')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      const _isMobile = window.innerWidth < 640;
-      if (target === 'history') _applyHistRange(_isMobile ? '4h' : '3d');
-      else _applyChartRange(_isMobile ? '24h' : '7d');
+      if (target === 'history') _applyHistRange(defaultRangeKey('history'));
+      else _applyChartRange(defaultRangeKey('chart'));
       _closeDateRangePopover();
     });
   }
@@ -387,7 +345,7 @@ export function _openDateRangePicker(anchorEl, dataStartEpoch, target = 'chart')
 
   const rect = anchorEl.getBoundingClientRect();
   const popW = 268;
-  const isMobile = window.innerWidth < 640;
+  const isMobile = isPhone();
   if (isMobile) {
     pop.style.cssText = 'position:fixed;bottom:0;left:0;right:0;';
   } else {
@@ -415,7 +373,9 @@ export function _openDateRangePicker(anchorEl, dataStartEpoch, target = 'chart')
   setTimeout(() => {
     document.addEventListener('click', _dateRangeClickHandler, { once: true });
   }, 0);
-  document.addEventListener('keydown', _dateRangeEscHandler);
+  // Escape closes the picker only, the modal stays (finding F49)
+  _popPickerLayer = pushLayer(_closeDateRangePopover);
+  pop.querySelector('.cal-day:not([disabled])')?.focus({ preventScroll: true });
 }
 
 export function resetRangeState() {
@@ -430,37 +390,16 @@ export function resetRangeState() {
   _healthBuckets = null;
 }
 
-export function initRangeStateForOpen(rangeKey, ranges, availableRanges, isEligible, DEFAULT_HIST_RANGE) {
-  _timeRange = rangeKey;
-  if (rangeKey === 'custom') {
-    const savedSince = localStorage.getItem('mw_chart_since');
-    const savedUntil = localStorage.getItem('mw_chart_until');
-    _chartSince = savedSince ? Number(savedSince) : null;
-    _chartUntil = savedUntil ? Number(savedUntil) : null;
-  } else {
-    [_chartSince, _chartUntil] = _rangeSinceUntil(rangeKey);
-  }
-  const savedHistRange = localStorage.getItem('mw_hist_range');
-  const savedHistSince = localStorage.getItem('mw_hist_since');
-  const savedHistUntil = localStorage.getItem('mw_hist_until');
-  _histSince = savedHistSince ? Number(savedHistSince) : null;
-  _histUntil = savedHistUntil ? Number(savedHistUntil) : null;
-  if (!_histSince && !_histUntil) {
-    let histRange = DEFAULT_HIST_RANGE;
-    const histR = ranges.find(r => r.key === histRange);
-    if (histR && !isEligible(histR)) {
-      const candidates = ranges.filter(r => isEligible(r) && r.key !== 'max').sort((a, b) => a.seconds - b.seconds);
-      histRange = candidates.length > 0 ? candidates[0].key : 'max';
-    }
-    _histRangeKey = histRange;
-    localStorage.setItem('mw_hist_range', histRange);
-    const [histSince, histUntil] = _rangeSinceUntil(histRange);
-    _histSince = histSince;
-    _histUntil = histUntil;
-    _lsSetOrRemove('mw_hist_since', _histSince);
-    _lsSetOrRemove('mw_hist_until', _histUntil);
-  } else {
-    _histRangeKey = savedHistRange || 'custom';
-  }
-  return { chartSince: _chartSince, chartUntil: _chartUntil, histSince: _histSince, histUntil: _histUntil, histRangeKey: _histRangeKey };
+// Chart and history ranges for a model being opened: stored keys (or custom bounds) when the model
+// has data for them, the configured defaults otherwise; windows derived now. Returns the chart key.
+export function initRangeStateForOpen(availableRanges) {
+  const ranges = state.timeRanges;
+  _timeRange = pickRangeKey(storedRange(localStorage, 'chart'), 'chart', ranges, availableRanges);
+  const chart = storedRange(localStorage, 'chart');
+  [_chartSince, _chartUntil] = rangeWindow(_timeRange, ranges, Date.now() / 1000, chart.custom);
+  const hist = storedRange(localStorage, 'history');
+  _histRangeKey = pickRangeKey(hist, 'history', ranges, availableRanges);
+  [_histSince, _histUntil] = rangeWindow(_histRangeKey, ranges, Date.now() / 1000, hist.custom);
+  storeRange(localStorage, 'history', _histRangeKey, hist.custom);
+  return _timeRange;
 }

@@ -29,9 +29,6 @@ from backend.state import parse_model_key
 _SUITE_RUNNERS: dict[str, Callable[[dict, str, str], Awaitable[dict]]] = {}
 _SUITE_CHECKS: dict[str, Callable[[], bool]] = {}
 
-_MAX_ERROR_LEN = 300
-_MAX_RESPONSE_LEN = 4000
-
 
 def _find_synbad_bin() -> str:
     """Resolve the SynBad binary path.
@@ -199,14 +196,14 @@ def _parse_synbad_output(stdout: str, stderr: str) -> dict:
                 try:
                     current_response = _parse_tool_args(json.loads(raw))
                 except ValueError:
-                    current_response = raw[:_MAX_RESPONSE_LEN]
+                    current_response = raw[:st.c.audit_max_response_chars]
                 in_response = False
                 response_buf = []
                 response_brace_depth = 0
             continue
         em = _ERR_MSG_RE.match(stripped)
         if em:
-            current_error = f"{em.group(1)}: {em.group(2)}"[:_MAX_ERROR_LEN]
+            current_error = f"{em.group(1)}: {em.group(2)}"[:st.c.audit_max_error_chars]
             in_error_cont = True
             continue
         if in_error_cont:
@@ -215,8 +212,8 @@ def _parse_synbad_output(stdout: str, stderr: str) -> dict:
             if stripped.startswith("at "):
                 in_error_cont = False
                 continue
-            if current_error and len(current_error) < _MAX_ERROR_LEN - 10:
-                current_error = f"{current_error} {stripped}"[:_MAX_ERROR_LEN]
+            if current_error and len(current_error) < st.c.audit_max_error_chars - 10:
+                current_error = f"{current_error} {stripped}"[:st.c.audit_max_error_chars]
 
     m = _SUMMARY_RE.search(stdout)
     if m:

@@ -1,7 +1,7 @@
 // IndexedDB-backed cache layer for providers, config, metrics, and VAPID key.
 import { logError, logTag } from './utils.js';
+import { BOOT } from './state.js';
 
-const _DB_NAME = 'mw_cache';
 const _DB_VERSION = 2;
 const _STORE = 'items';
 let _db = null;
@@ -9,7 +9,8 @@ let _db = null;
 function _open() {
   if (_db) return _db;
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(_DB_NAME, _DB_VERSION);
+    // The database shares the storage prefix of the localStorage keys (finding F19)
+    const req = indexedDB.open(`${BOOT.storage_prefix}cache`, _DB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
       if (e.oldVersion < 2 && db.objectStoreNames.contains(_STORE)) {
@@ -45,7 +46,8 @@ export async function cacheGet(key) {
   } catch (e) { logError(logTag('Cache', '←', 'Error', 'Get'), e); return null; }
 }
 
-export async function cacheSet(key, data, ttlSeconds = 300) {
+// ttlSeconds: app.yaml ui.cache_ttl for the item (finding F20)
+export async function cacheSet(key, data, ttlSeconds) {
   try {
     const db = await _open();
     return new Promise((resolve) => {

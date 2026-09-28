@@ -1,12 +1,13 @@
 // Chart dataset builders, axis configuration, tooltip rendering, and bucket
 // transforms. Card charts normalize 0-1; modal charts use raw values with dual
 // Y-axes. Bucket transforms handle both dedup (shared) and legacy array formats.
-import { state, CC } from './state.js';
-import { esc, BP_SM, isTouchDevice, STATUS_GLYPH } from './utils.js';
-import { fmtMsCompactPlain } from './format.js';
+// Series are identified by key (ds._series, ds._marker), never by their label (finding F80).
+import { state } from './state.js';
+import { esc, isPhone, isTouchDevice, STATUS_GLYPH, withAlpha } from './utils.js';
+import { fmtMsCompactPlain, metricLabel, statusLabel } from './format.js';
 import { showTip, hideTip } from './tooltips.js';
 import { chartColors as _chartColors } from './theme.js';
-import { _hexToRgba, _ZONE_TIERS, _SCORE_THRESHOLDS } from './chart-plugins.js';
+import { _ZONE_TIERS } from './chart-plugins.js';
 
 
 export const _TIME_SCALE = {
@@ -17,44 +18,45 @@ export const _TIME_SCALE = {
 const _GRADIENT_ALPHA = 0.35;
 const _CARD_GRADIENT_ALPHA = 0.15;
 
-export const _LINE_COLORS = {
-  tps: CC.tps, ttft: CC.ttft, p99: CC.tails, batch: CC.batching, health: CC.batching,
-  cs: CC.scoreC, ss: CC.scoreS, rs: CC.scoreR,
+// Each series: the METRIC_LABELS / color_thresholds key it plots, and its theme colour
+export const SERIES = {
+  tps: { metric: 'tps', thresholds: 'tps', color: 'tps' },
+  ttft: { metric: 'ttft', thresholds: 'ttft', color: 'ttft' },
+  p99: { metric: 'raw_p99_itl_ms', thresholds: 'raw_p99_itl_ms', color: 'tails' },
+  batch: { metric: 'chunk_token_ratio', thresholds: 'chunk_token_ratio', color: 'batching' },
+  health: { metric: 'ttft', thresholds: 'ttft', color: 'batching', bucketKey: 'ttft' },
+  cs: { metric: 'consistency_score', thresholds: 'scores', color: 'scoreC' },
+  ss: { metric: 'speed_score', thresholds: 'scores', color: 'scoreS' },
+  rs: { metric: 'reliability', thresholds: 'scores', color: 'scoreR' },
 };
 
-export const _KEY_CFG_METRIC = {
-  tps: 'tps', ttft: 'ttft', p99: 'raw_p99_itl_ms', batch: 'chunk_token_ratio',
-  health: 'ttft', cs: '__scores', ss: '__scores', rs: '__scores',
+const _MARKERS = {
+  failure: { label: 'Failure', key: 'failure_count', icon: STATUS_GLYPH.failed, colorVar: '--color-notif-offline', noun: 'failure', nounPlural: 'failures', color: 'failure' },
+  degraded: { get label() { return statusLabel('degraded'); }, key: 'degraded_count', icon: STATUS_GLYPH.degraded, colorVar: '--color-notif-degraded', noun: 'degraded', nounPlural: 'degraded', color: 'degraded' },
 };
 
-function _tierHexForValue(cfgKey, value) {
+export const seriesLabel = key => metricLabel(SERIES[key].metric);
+const _lineColor = key => _chartColors()[SERIES[key].color];
+const _bucketKey = key => SERIES[key].bucketKey ?? key;
+
+// The tier colour of a value (the zone base colour, any CSS colour form)
+function _tierColorForValue(cfgKey, value) {
   if (value == null) return null;
-  const isScores = cfgKey === '__scores';
-  const cfg = isScores ? _SCORE_THRESHOLDS : state.colorThresholds?.[cfgKey];
+  const cfg = state.colorThresholds?.[cfgKey];
   const tiers = state.colorThresholds?.tiers;
   if (!cfg?.thresholds || !tiers) return null;
   const ts = cfg.thresholds;
   const ge = cfg.higher_is_better;
-  let idx = -1;
-  for (let i = 0; i < ts.length; i++) {
-    if (ge ? value >= ts[i] : value < ts[i]) { idx = i; break; }
-  }
+  let idx = ts.findIndex(t => (ge ? value >= t : value < t));
   if (idx < 0) idx = ts.length - 1;
-  if (idx >= tiers.length) return null;
-  const tierCfg = _ZONE_TIERS[tiers[idx].color];
-  if (!tierCfg) return null;
-  const cc = _chartColors();
-  const hex = (cc[tierCfg.base] || '').trim();
-  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
+  const tierCfg = _ZONE_TIERS[tiers[idx]?.color];
+  return tierCfg ? _chartColors()[tierCfg.base] : null;
 }
 
-function _endpointDotColor(view, key, buckets) {
-  const mKey = key === 'health' ? 'ttft' : key;
+function _endpointDotColor(key, buckets) {
   const last = buckets.length - 1;
-  if (last < 0) return _LINE_COLORS[key] || CC.tps;
-  const value = buckets[last][mKey];
-  const cfgKey = _KEY_CFG_METRIC[key] || key;
-  return _tierHexForValue(cfgKey, value) || _LINE_COLORS[key] || CC.tps;
+  const value = last >= 0 ? buckets[last][_bucketKey(key)] : null;
+  return _tierColorForValue(SERIES[key].thresholds, value) || _lineColor(key);
 }
 
 function _endpointArrays(data, dotColor) {
@@ -77,18 +79,16 @@ function _normalizeValues(values) {
 }
 
 function _lineDS(key, buckets, opts) {
-  const { normalized, yAxisID, dash, tension, pointRadius, borderWidth, pointHoverRadius, spanGaps, gradient, view, full, dataOverride } = opts;
-  const mKey = key === 'health' ? 'ttft' : key;
-  const rawValues = buckets.map(b => b[mKey]);
+  const { normalized, yAxisID, dash, tension, pointRadius, borderWidth, pointHoverRadius, spanGaps, gradient, full, dataOverride } = opts;
+  const rawValues = buckets.map(b => b[_bucketKey(key)]);
   const data = dataOverride || (normalized ? _normalizeValues(rawValues) : rawValues);
-  const color = _LINE_COLORS[key] || CC.tps;
+  const color = _lineColor(key);
   const prScalar = typeof pointRadius === 'number' ? pointRadius : 0;
-  const dotColor = _endpointDotColor(view, key, buckets);
-  const ep = _endpointArrays(data, dotColor);
-  const wantGradient = gradient ?? true;
-  const gradAlpha = full ? _GRADIENT_ALPHA : _CARD_GRADIENT_ALPHA;
+  const ep = _endpointArrays(data, _endpointDotColor(key, buckets));
+  const gradientColor = (gradient ?? true) ? withAlpha(color, full ? _GRADIENT_ALPHA : _CARD_GRADIENT_ALPHA) : null;
   return {
-    label: opts.label,
+    label: seriesLabel(key),
+    _series: key,
     data,
     borderColor: color,
     backgroundColor: 'transparent',
@@ -102,20 +102,19 @@ function _lineDS(key, buckets, opts) {
     borderJoinStyle: 'round',
     pointRadius: ep.pointRadius,
     borderWidth: borderWidth ?? 2,
-    fill: wantGradient ? 'origin' : false,
+    fill: gradientColor ? 'origin' : false,
     yAxisID,
     ...(spanGaps != null ? { spanGaps } : {}),
-    ...(wantGradient ? { _gradientColor: _hexToRgba(color, gradAlpha), _glow: true } : {}),
+    ...(gradientColor ? { _gradientColor: gradientColor, _glow: true } : {}),
   };
 }
 
 function _markerDS(buckets, type, yID, full) {
-  const countKey = type === 'failure' ? 'failure_count' : 'degraded_count';
-  const label = type === 'failure' ? 'Failure' : 'Degraded';
+  const m = _MARKERS[type];
   const maxMarkers = full ? 20 : 8;
   const markerIdx = [];
   for (let i = 0; i < buckets.length; i++) {
-    if (buckets[i][countKey] > 0) markerIdx.push(i);
+    if (buckets[i][m.key] > 0) markerIdx.push(i);
   }
   let minGap = full ? 2 : 1;
   if (markerIdx.length > maxMarkers) {
@@ -127,13 +126,13 @@ function _markerDS(buckets, type, yID, full) {
     if (i - last >= minGap) { keep.add(i); last = i; }
   }
   const yVal = type === 'degraded' ? 0.82 : 0.95;
-  const data = buckets.map((b, i) => keep.has(i) && b[countKey] > 0 ? yVal : null);
-  const radius = buckets.map((b, i) => keep.has(i) && b[countKey] > 0 ? Math.min(2 + Math.log2(1 + b[countKey]), 6) : 0);
-  const cc = _chartColors();
-  const color = type === 'degraded' ? cc.degraded : cc.failure;
+  const data = buckets.map((b, i) => keep.has(i) && b[m.key] > 0 ? yVal : null);
+  const radius = buckets.map((b, i) => keep.has(i) && b[m.key] > 0 ? Math.min(2 + Math.log2(1 + b[m.key]), 6) : 0);
+  const color = _chartColors()[m.color];
   const pointStyle = type === 'degraded' ? 'rectRot' : undefined;
   return {
-    label,
+    label: m.label,
+    _marker: type,
     data, borderColor: color, backgroundColor: color,
     pointRadius: radius, pointHoverRadius: 5, showLine: false, yAxisID: yID,
     _isMarker: true,
@@ -156,16 +155,16 @@ export function _buildDatasets(buckets, full, view) {
 
   if (isScores) {
     const scoreCfg = [
-      { key: 'cs', label: 'Consistency', dash: [] },
-      { key: 'ss', label: 'Speed', dash: [6, 3] },
-      { key: 'rs', label: 'Reliability', dash: [2, 4] },
+      { key: 'cs', dash: [] },
+      { key: 'ss', dash: [6, 3] },
+      { key: 'rs', dash: [2, 4] },
     ];
     const datasets = [];
     for (const sc of scoreCfg) {
       const rawScores = buckets.map(b => b[sc.key]);
       const dataOverride = normalized ? rawScores.map(v => v != null ? v / 100 : null) : null;
       datasets.push(_lineDS(sc.key, buckets, {
-        normalized, yAxisID: yLeft, label: sc.label, view, full,
+        normalized, yAxisID: yLeft, full,
         dash: sc.dash, tension: tens, pointRadius: pr, pointHoverRadius: phr,
         borderWidth: bw, spanGaps: true, dataOverride,
       }));
@@ -176,17 +175,15 @@ export function _buildDatasets(buckets, full, view) {
   const datasets = [];
 
   const leftKey = isHealth ? 'health' : (isConsistency ? 'p99' : 'tps');
-  const leftLabel = isHealth ? 'TTFT' : (isConsistency ? 'Tails' : 'TPS');
   datasets.push(_lineDS(leftKey, buckets, {
-    normalized, yAxisID: yLeft, label: leftLabel, view, full,
+    normalized, yAxisID: yLeft, full,
     tension: tens, pointRadius: pr, pointHoverRadius: phr, borderWidth: bw,
   }));
 
   if (!isHealth) {
     const rightKey = isConsistency ? 'batch' : 'ttft';
-    const rightLabel = isConsistency ? 'Batching' : 'TTFT';
     datasets.push(_lineDS(rightKey, buckets, {
-      normalized, yAxisID: yRight, label: rightLabel, view, full,
+      normalized, yAxisID: yRight, full,
       dash: [], tension: tens, pointRadius: pr, pointHoverRadius: phr, borderWidth: bw,
     }));
   }
@@ -199,61 +196,38 @@ export function _buildDatasets(buckets, full, view) {
   return datasets;
 }
 
+const _SERIES_FMT = {
+  batch: v => `${v.toFixed(1)}\u00d7`,
+  tps: v => v.toFixed(1),
+};
+
+// One series' value at a bucket as tooltip text: "TPS: 87.9 (P10-P90: 52.5 to 123.2)"
+function _seriesText(key, b, bucketed) {
+  const label = esc(seriesLabel(key));
+  const mk = _bucketKey(key);
+  const val = b?.[mk];
+  if (val == null) return `${label}: --`;
+  if (key === 'cs' || key === 'ss' || key === 'rs') return `${label}: ${Math.round(val)}`;
+  const est = b[`${mk}_estimated`] ? '~' : '';
+  const fmt = _SERIES_FMT[key] ?? (v => fmtMsCompactPlain(v, 1));
+  const valueFmt = _SERIES_FMT[key] ?? (v => fmtMsCompactPlain(v, 2));
+  const showRange = mk === 'ttft' || bucketed;
+  const range = showRange && b[`${mk}_lo`] != null && b[`${mk}_lo`] !== b[`${mk}_hi`] ? ` (P10-P90: ${est}${fmt(b[`${mk}_lo`])} to ${est}${fmt(b[`${mk}_hi`])})` : '';
+  return `${label}: ${est}${valueFmt(val)}${range}`;
+}
+
 export function formatTooltipItem(ctx) {
-  const dsLabel = ctx.dataset.label;
-  const idx = ctx.dataIndex;
-  const chart = ctx.chart;
-  const buckets = chart._buckets;
-  const bucketed = chart._bucketed;
-  const b = buckets?.[idx];
-
-  const _MARKER_CFG = {
-    'Failure': { key: 'failure_count', icon: STATUS_GLYPH.failed, colorVar: '--color-notif-offline', noun: 'failure', nounPlural: 'failures' },
-    'Degraded': { key: 'degraded_count', icon: STATUS_GLYPH.degraded, colorVar: '--color-notif-degraded', noun: 'degraded', nounPlural: 'degraded' },
-  };
-  const mc = _MARKER_CFG[dsLabel];
-  if (mc) {
-    if (!b) return `<b style="color:var(${mc.colorVar})">${mc.icon}</b> ${dsLabel}`;
-    const cnt = b[mc.key] ?? 0;
-    const prefix = `<b style="color:var(${mc.colorVar})">${mc.icon}</b>`;
-    if (cnt <= 0) return `${prefix} ${dsLabel}`;
-    return `${prefix} ${cnt} ${cnt === 1 ? mc.noun : mc.nounPlural}`;
+  const ds = ctx.dataset;
+  const b = ctx.chart._buckets?.[ctx.dataIndex];
+  const m = _MARKERS[ds._marker];
+  if (m) {
+    const prefix = `<b style="color:var(${m.colorVar})">${m.icon}</b>`;
+    const cnt = b?.[m.key] ?? 0;
+    if (cnt <= 0) return `${prefix} ${esc(m.label)}`;
+    return `${prefix} ${cnt} ${cnt === 1 ? m.noun : m.nounPlural}`;
   }
-
-  if (dsLabel.startsWith('_')) return null;
-
-  const metricKeys = { 'TPS': 'tps', 'TTFT': 'ttft', 'Tails': 'p99', 'Batching': 'batch', 'Consistency': 'cs', 'Speed': 'ss', 'Reliability': 'rs' };
-  const mk = metricKeys[dsLabel];
-  if (!mk || !b) return `${esc(dsLabel)}: --`;
-
-  const val = b[mk];
-  if (val == null) return `${esc(dsLabel)}: --`;
-
-  if (mk === 'cs' || mk === 'ss' || mk === 'rs') {
-    return `${esc(dsLabel)}: ${Math.round(val)}`;
-  }
-
-  if (mk === 'batch') {
-    const est = b.batch_estimated;
-    const ePfx = est ? '~' : '';
-    if (bucketed && b[mk + '_lo'] != null && b[mk + '_lo'] !== b[mk + '_hi']) {
-      return `${esc(dsLabel)}: ${ePfx}${val.toFixed(1)}\u00d7 (P10\u2013P90: ${ePfx}${b[mk + '_lo'].toFixed(1)}\u2013${ePfx}${b[mk + '_hi'].toFixed(1)}\u00d7)`;
-    }
-    return `${esc(dsLabel)}: ${ePfx}${val.toFixed(1)}\u00d7`;
-  }
-  if (mk === 'tps') {
-    if (bucketed && b.tps_lo != null && b.tps_lo !== b.tps_hi) {
-      return `${esc(dsLabel)}: ${val.toFixed(1)} (P10\u2013P90: ${b.tps_lo.toFixed(1)}\u2013${b.tps_hi.toFixed(1)})`;
-    }
-    return `${esc(dsLabel)}: ${val.toFixed(1)}`;
-  }
-  const estMs = mk === 'ttft' ? b.ttft_estimated : mk === 'p99' ? b.p99_estimated : false;
-  const ePfx = estMs ? '~' : '';
-  const showRange = mk === 'ttft' ? (b[mk + '_lo'] != null && b[mk + '_lo'] !== b[mk + '_hi']) : (bucketed && b[mk + '_lo'] != null && b[mk + '_lo'] !== b[mk + '_hi']);
-  if (showRange) {
-    return `${esc(dsLabel)}: ${ePfx}${fmtMsCompactPlain(val, 2)} (P10\u2013P90: ${ePfx}${fmtMsCompactPlain(b[mk + '_lo'], 1)}\u2013${ePfx}${fmtMsCompactPlain(b[mk + '_hi'], 1)})`;
-  }
-  return `${esc(dsLabel)}: ${ePfx}${fmtMsCompactPlain(val, 2)}`;
+  if (!ds._series) return null;
+  return _seriesText(ds._series, b, ctx.chart._bucketed);
 }
 
 export const _SQRT2 = Math.sqrt(2);
@@ -383,11 +357,10 @@ export function externalTooltip(context) {
     const ctx = tooltip.dataPoints?.[i];
     const label = ctx ? formatTooltipItem(ctx) : esc(b.lines?.[0] || '');
     if (label == null) return null;
-    const dsLabel = ctx?.dataset?.label || '';
     const isMarker = ctx?.dataset?._isMarker === true;
     const color = tooltip.labelColors?.[i];
     const dot = (!isMarker && color) ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color.borderColor};margin-right:6px;vertical-align:middle"></span>` : '';
-    return { key: dsLabel, html: `${dot}${label}` };
+    return { key: ctx?.dataset?._series ?? ctx?.dataset?._marker, html: `${dot}${label}` };
   }).filter(Boolean) : [];
 
   const chart_ = chart;
@@ -398,42 +371,13 @@ export function externalTooltip(context) {
     bucketInfo = `<div style="color:var(--color-chart-tooltip-info);font-size:10px;margin-bottom:2px">${bucket.count} tests in period</div>`;
   }
 
-  const view = chart_._view;
-  const cc = _chartColors();
-  const metricPairs = {
-    speed: [
-      { key: 'TPS', mk: 'tps', color: cc.tps },
-      { key: 'TTFT', mk: 'ttft', color: cc.ttft },
-    ],
-    consistency: [
-      { key: 'Tails', mk: 'p99', color: cc.tails },
-      { key: 'Batching', mk: 'batch', color: cc.batching },
-    ],
-    health: [
-      { key: 'TTFT', mk: 'ttft', color: cc.ttft },
-    ],
-  };
-  const pairMetrics = metricPairs[view] || [];
-  const seenKeys = new Set(items.map(it => it.key));
-  for (const m of pairMetrics) {
-    if (seenKeys.has(m.key)) continue;
-    if (!bucket) continue;
-    const val = bucket[m.mk];
-    const lo = bucket[m.mk + '_lo'];
-    const hi = bucket[m.mk + '_hi'];
-    const est = bucket[m.mk + '_estimated'] ? '~' : '';
-    let text;
-    if (val == null) {
-      text = `${m.key}: --`;
-    } else if (m.mk === 'batch') {
-      text = lo != null && lo !== hi ? `${m.key}: ${est}${val.toFixed(1)}\u00d7 (P10\u2013P90: ${est}${lo.toFixed(1)}\u2013${est}${hi.toFixed(1)}\u00d7)` : `${m.key}: ${est}${val.toFixed(1)}\u00d7`;
-    } else if (m.mk === 'tps') {
-      text = lo != null && lo !== hi ? `${m.key}: ${est}${val.toFixed(1)} (P10\u2013P90: ${est}${lo.toFixed(1)}\u2013${est}${hi.toFixed(1)})` : `${m.key}: ${est}${val.toFixed(1)}`;
-    } else {
-      text = lo != null && lo !== hi ? `${m.key}: ${est}${fmtMsCompactPlain(val, 2)} (P10\u2013P90: ${est}${fmtMsCompactPlain(lo, 1)}\u2013${est}${fmtMsCompactPlain(hi, 1)})` : `${m.key}: ${est}${fmtMsCompactPlain(val, 2)}`;
-    }
-    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${m.color};margin-right:6px;vertical-align:middle"></span>`;
-    items.push({ key: m.key, html: `${dot}${text}` });
+  // Series of the view that the hovered point did not list (a gap in one line) still show
+  const pairMetrics = { speed: ['tps', 'ttft'], consistency: ['p99', 'batch'], health: ['health'] }[chart_._view] || [];
+  const seen = new Set((tooltip.dataPoints || []).map(dp => dp.dataset._series).filter(Boolean));
+  for (const key of pairMetrics) {
+    if (seen.has(key) || !bucket) continue;
+    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${_lineColor(key)};margin-right:6px;vertical-align:middle"></span>`;
+    items.push({ key, html: `${dot}${_seriesText(key, bucket, chart_._bucketed)}` });
   }
 
   const html = (titleLines.length ? `<div style="color:var(--color-chart-tooltip-title);font-weight:600;margin-bottom:4px">${esc(titleLines[0])}</div>` : '') +
@@ -448,8 +392,13 @@ export const _TOOLTIP_FILTER = (item) => {
   return true;
 };
 
+// Sharp on high-DPI screens, up to ui.chart_max_pixel_ratio (finding F84: it was always 1)
+export function chartPixelRatio() {
+  return Math.min(window.devicePixelRatio || 1, state.ui.chart_max_pixel_ratio);
+}
+
 export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
-  const isMobile = window.innerWidth < BP_SM;
+  const isMobile = isPhone();
   const ranges = axisRanges || {};
   const baseH = 300, baseW = 900;
   const h = chartH || (full ? 300 : 100);
@@ -480,7 +429,7 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
 
   if (!full) {
     return {
-      responsive: false, maintainAspectRatio: false, devicePixelRatio: 1,
+      responsive: false, maintainAspectRatio: false, devicePixelRatio: chartPixelRatio(),
       layout: { padding: { left: 0, right: 4, top: 0, bottom: 0 } },
       events: isTouchDevice() ? [] : undefined,
       interaction: { mode: 'index', intersect: false },
@@ -510,8 +459,10 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
   const leftIsLog = isConsistency || isHealth;
   const rightIsLog = !isConsistency && !isHealth && !isScores;
   const cc = _chartColors();
-  const leftColor = isScores ? CC.scoreS : (isConsistency ? CC.tails : (isHealth ? CC.batching : CC.tps));
-  const rightColor = isConsistency ? CC.batching : CC.ttft;
+  const leftKey = isScores ? 'ss' : (isConsistency ? 'p99' : (isHealth ? 'health' : 'tps'));
+  const rightKey = isConsistency ? 'batch' : 'ttft';
+  const leftColor = _lineColor(leftKey);
+  const rightColor = _lineColor(rightKey);
   const leftRange = ranges.left || {};
   const rightRange = ranges.right || {};
 
@@ -528,7 +479,7 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
   };
 
   return {
-    responsive: false, maintainAspectRatio: false, devicePixelRatio: 1,
+    responsive: false, maintainAspectRatio: false, devicePixelRatio: chartPixelRatio(),
     layout: { padding: { left: 0, right: 0, top: 0, bottom: 0 } },
     interaction: { mode: 'index', intersect: false },
     spanGaps: true,
@@ -560,7 +511,7 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
         ...(leftIsLog ? { min: leftRange.min, max: leftRange.max } : { min: isScores ? 0 : leftRange.min, max: isScores ? 100 : leftRange.max }),
         ticks: { color: leftColor, font: { size: isMobile ? 9 : 10 }, callback: _dedupCb(v => isScores ? Math.round(v) : ((isConsistency || isHealth) ? fmtMsCompactPlain(v, 1) : Math.round(v))), ...(isScores ? { stepSize: 25, maxTicksLimit: 5 } : (leftIsLog ? { maxTicksLimit: logTicks, autoSkip: false } : tickOpts(leftRange))) },
         grid: { color: cc.gridSubtle, drawOnChartArea: true },
-        title: { display: !isMobile, text: isScores ? 'Score' : (isConsistency ? 'Tails' : (isHealth ? 'TTFT' : 'TPS')), color: leftColor, font: { size: 11 } },
+        title: { display: !isMobile, text: isScores ? 'Score' : seriesLabel(leftKey), color: leftColor, font: { size: 11 } },
       },
       'y-right': {
         type: rightIsLog ? 'logarithmic' : 'linear', position: 'right',
@@ -569,7 +520,7 @@ export function chartOptions(full, view, axisRanges, expanded, chartW, chartH) {
         ...(rightIsLog ? { min: rightRange.min, max: rightRange.max } : { min: rightRange.min, max: rightRange.max }),
         ticks: { color: rightColor, font: { size: isMobile ? 9 : 10 }, callback: _dedupCb(v => isConsistency ? (v != null ? Math.round(v * 10) / 10 + '\u00d7' : '') : fmtMsCompactPlain(v, 1)), ...(rightIsLog ? { maxTicksLimit: logTicks, autoSkip: false } : tickOpts(rightRange)) },
         grid: { drawOnChartArea: false },
-        title: { display: !isMobile, text: isConsistency ? 'Batching' : 'TTFT', color: rightColor, font: { size: 11 } },
+        title: { display: !isMobile, text: seriesLabel(rightKey), color: rightColor, font: { size: 11 } },
       },
       'y-markers': {
         type: 'linear', position: 'right', display: false,
@@ -726,19 +677,13 @@ export function _transformModalBuckets(serverBuckets) {
   });
 }
 
-export function _calculateBuckets(chartType, force = false) {
-  const key = `mw_buckets2_${chartType}`;
-  if (!force) {
-    const cached = localStorage.getItem(key);
-    if (cached) return parseInt(cached);
-  }
+// Buckets a chart of this width can show legibly (cheap: computed per request, not stored)
+export function _calculateBuckets(chartType) {
   const width = chartType === 'card'
     ? Math.min(window.innerWidth / 3, 300)
     : Math.min(window.innerWidth * 0.8, 800);
   const pxPerPoint = chartType === 'card' ? 8 : 12;
-  const buckets = Math.max(10, Math.floor(width / pxPerPoint));
-  localStorage.setItem(key, buckets);
-  return buckets;
+  return Math.max(10, Math.floor(width / pxPerPoint));
 }
 
 export function _hasCardViewData(cb, view) {

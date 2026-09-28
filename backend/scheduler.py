@@ -18,7 +18,7 @@ import backend.db_probe as db_probe
 from backend.state import utc_now_iso, TEST_HEALTH, TEST_BENCHMARK, TEST_AUDIT, TEST_PROBE, parse_model_key
 from backend.streaming import stream_test, strip_health_metrics
 from backend.metrics import ensure_model
-from backend.stats import find_critical_metrics, cached_range_scores, THRESHOLD_TO_RESULT_KEY
+from backend.stats import find_critical_metrics, cached_range_scores, cached_card_buckets, THRESHOLD_TO_RESULT_KEY
 from backend.state import strip_internal
 from backend.batch import PeriodicBatcher
 from backend.notifications import (
@@ -172,6 +172,9 @@ class BroadcastBatcher(PeriodicBatcher):
         """
         existing = self._pending.get(model_key)
         if existing:
+            # A later health result must not drop the card buckets an earlier benchmark brought
+            if "card_buckets" in existing["msg"] and "card_buckets" not in msg:
+                msg = {**msg, "card_buckets": existing["msg"]["card_buckets"]}
             existing["msg"] = msg
             if changed:
                 existing["changed"] = changed
@@ -218,6 +221,10 @@ async def _broadcast_result(model_key: str, record: dict, uptime_pct: float | No
     ds = entry.get("degraded_source")
     if ds is not None:
         msg["degraded_source"] = ds
+    # A final benchmark changes the model's card charts: its buckets travel with the result, so
+    # pages no longer refetch every provider's buckets after any result (finding F88)
+    if msg["test_type"] == TEST_BENCHMARK and record.get("retry_attempt") is None:
+        msg["card_buckets"] = cached_card_buckets(entry)
 
     degradation = None
     if changed:
@@ -371,7 +378,7 @@ async def run_test(model_key: str, test_type: str = TEST_BENCHMARK):
                 # are too minimal for critical-tier detection).
                 if test_type == TEST_BENCHMARK:
                     critical = find_critical_metrics(result)
-                    if len(critical) >= 2:
+                    if len(critical) >= st.c.degraded_critical_metrics:
                         result["degraded"] = True
                         result["degraded_reason"] = "critical_tier"
                         result["critical_metrics"] = critical
@@ -629,7 +636,7 @@ def _provider_inflight() -> dict[str, int]:
     return counts
 
 
-def _dispatch_due(undispatched: list[str] | None = None) -> int:
+def _dispatch_due(undispatched: list[str] | None = None) -> None:
     """Dispatch due tests: health checks first, then benchmarks, then probes, then audits.
 
     Health checks get priority - they finish fast, freeing provider slots
@@ -653,7 +660,7 @@ def _dispatch_due(undispatched: list[str] | None = None) -> int:
     probe_count = 0
     global_slots = max(st.c.max_concurrent_tests - len(st.running_tests | st.running_health | st.running_audit | st.running_probe), 0)
     if global_slots <= 0:
-        return 0
+        return
 
     # Priority 1: Health checks (dispatch first - finish fast, free the slot)
     for mk in health_due:
@@ -723,7 +730,6 @@ def _dispatch_due(undispatched: list[str] | None = None) -> int:
                      health_count, len(health_due), bench_count, len(bench_due),
                      probe_count, len(probe_due), audit_count, len(audit_due), suffix)
 
-    return bench_count + health_count + audit_count + probe_count
 
 
 async def _run_test_managed(model_key: str, test_type: str = TEST_BENCHMARK):
@@ -804,7 +810,6 @@ async def _run_audit_managed(model_key: str):
 async def _run_probe_managed(model_key: str):
     """Run a capability probe for a model. Like audit - no status changes, no retries."""
     from backend.probe import run_probe_test
-    import backend.db as db; import backend.db_probe as db_probe
     try:
         entry = st.model_cache.get(model_key)
         if not entry:
@@ -908,16 +913,13 @@ async def scheduler():
         try:
             await apply_auto_archive()
             undispatched = _iter_undispatched_models()
-            dispatched = _dispatch_due(undispatched)
-            if dispatched:
-                st.last_run_time = time.monotonic()
+            _dispatch_due(undispatched)
 
             # Periodic DB cleanup: delete old results and orphaned entries
             now = time.monotonic()
             if now - _last_cleanup >= st.c.cleanup_interval:
                 _last_cleanup = now
                 try:
-                    import backend.db as db; import backend.db_probe as db_probe
                     cutoff = time.time() - st.c.retention_days * 86400
                     deleted = await asyncio.to_thread(db.delete_old_results, cutoff)
                     if deleted:
@@ -953,7 +955,6 @@ async def scheduler():
             if (st.running_tests or st.running_health or st.running_audit or st.running_probe) and sleep_time < 1.0:
                 sleep_time = 1.0
 
-            st.next_run_time = time.monotonic() + sleep_time
             if sleep_time > 0:
                 try:
                     await asyncio.wait_for(st._wake_event.wait(), timeout=sleep_time)

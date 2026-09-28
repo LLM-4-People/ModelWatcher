@@ -17,7 +17,10 @@ import re
 
 import pytest
 
-from backend.state import BACKEND_DIR, BASE_DIR, FRONTEND_DIR
+from backend.state import (
+    BACKEND_DIR, BASE_DIR, CAPABILITIES, CHART_VIEW_LABELS, FRONTEND_DIR, MODEL_KEY_SEP, STATUS_LABELS, STORAGE_KEYS,
+    STORAGE_PREFIX,
+)
 
 JS_DIR = FRONTEND_DIR / "js"
 JS_FILES = sorted(JS_DIR.glob("*.js"))
@@ -154,7 +157,7 @@ def test_banner_is_hidden_by_attribute_not_by_stylesheet():
 
 def test_client_never_hardcodes_server_paths_or_close_codes():
     found = _hits(r"/(?:health|ws)(?![\w.-])|\b(1008|1012|1013|4000)\b|_STALE_MS|_wsBackoff = \d")
-    assert not found, "paths, close codes and timings come from state.conn (window.__MW_CONN__):\n" + "\n".join(found)
+    assert not found, "paths, close codes and timings come from state.conn (window.__MW_BOOT__.conn):\n" + "\n".join(found)
 
 
 def test_every_connection_state_is_styled_and_explained():
@@ -193,12 +196,12 @@ def _balanced(src, start, open_ch, close_ch):
     return src[start:]
 
 
-def _silent_catches(path):
+def _silent_catches(path, logs=_LOGS):
     src = path.read_text()
     silent = [m.start() for m in re.finditer(r"\bcatch\s*(\([^)]*\))?\s*\{", src)
-              if not _LOGS.search(_balanced(src, m.end() - 1, "{", "}"))]
+              if not logs.search(_balanced(src, m.end() - 1, "{", "}"))]
     silent += [m.start() for m in re.finditer(r"\.catch\(", src)
-               if not _LOGS.search(_balanced(src, m.end() - 1, "(", ")"))]
+               if not logs.search(_balanced(src, m.end() - 1, "(", ")"))]
     return [f"{path.name}:{src.count(chr(10), 0, pos) + 1}" for pos in sorted(silent)]
 
 
@@ -212,6 +215,160 @@ def test_catch_scanner_detects_silent_catches(tmp_path):
     sample = tmp_path / "sample.js"
     sample.write_text("p.catch(() => {});\ntry { x(); } catch (e) { y = 1; }\ntry { x(); } catch (e) { logError('t', e); }\n")
     assert _silent_catches(sample) == ["sample.js:1", "sample.js:2"]
+
+
+# ── Frontend group round: one home per value, label and key ─────────────────
+
+SW_JS = FRONTEND_DIR / "sw.js"
+
+
+def test_storage_keys_come_from_the_registry():
+    """F19: every storage key is LS.<NAME> (backend/state.py STORAGE_KEYS through the bootstrap)."""
+    prefix = re.escape(STORAGE_PREFIX)
+    found = _hits(rf"""['"`]{prefix}""")
+    found += [f"sw.js:{n}" for n, line in _code_lines(SW_JS) if re.search(rf"""['"`]{prefix}""", line)]
+    assert not found, "use LS.<NAME> or BOOT.storage_prefix instead of key literals:\n" + "\n".join(found)
+
+
+def test_every_storage_key_name_is_registered_and_used():
+    """F19: LS.<NAME> must exist in STORAGE_KEYS (a typo stores under "undefined"), and a key no
+    module reads any more leaves the registry, so pruneStorage clears it from browsers."""
+    used = {name for f in JS_FILES for name in re.findall(r"\bLS\.([A-Z_]+)", f.read_text())}
+    assert used - set(STORAGE_KEYS) == set(), f"unregistered: {used - set(STORAGE_KEYS)}"
+    assert set(STORAGE_KEYS) - used == set(), f"registered but unused: {set(STORAGE_KEYS) - used}"
+
+
+def test_model_keys_are_built_with_the_backend_separator():
+    """F45: the frontend joins and splits model keys only through makeModelKey/parseModelKey."""
+    sep = re.escape(MODEL_KEY_SEP)
+    found = _hits(rf"""['"`]{sep}['"`]|\${{[^}}]+}}{sep}\${{""")
+    assert not found, "build model keys with makeModelKey/parseModelKey (state.js):\n" + "\n".join(found)
+
+
+def test_then_chains_end_in_a_catch():
+    """F33: a promise chain without a .catch() turns a failure into an unhandled rejection."""
+    found = []
+    for f in JS_FILES:
+        src = f.read_text()
+        for m in re.finditer(r"\.then\(", src):
+            end = m.end() - 1 + len(_balanced(src, m.end() - 1, "(", ")"))
+            while link := re.match(r"\s*\.(?:then|finally)\(", src[end:]):
+                start = end + link.end() - 1
+                end = start + len(_balanced(src, start, "(", ")"))
+            if not re.match(r"\s*\.catch\(", src[end:]):
+                found.append(f"{f.name}:{src.count(chr(10), 0, m.start()) + 1}")
+    assert not found, f".then() chains without a final .catch(): {sorted(set(found))}"
+
+
+def test_service_worker_catches_log():
+    """F35: sw.js has no page logger; every catch there goes through swLogError, and the promise
+    each event handler waits for ends in one, so a failed activate or push is not silent."""
+    found = _silent_catches(SW_JS, logs=re.compile(r"\bswLogError\(|\bthrow\b"))
+    src = SW_JS.read_text()
+    for m in re.finditer(r"\.waitUntil\(", src):
+        arg = _balanced(src, m.end() - 1, "(", ")")[1:-1].rstrip()
+        last = arg.rfind(".catch(")
+        tail = arg[last + len(".catch"):] if last >= 0 else ""
+        if not (tail and _balanced(tail, 0, "(", ")") == tail and "swLogError(" in tail):
+            found.append(f"sw.js:{src.count(chr(10), 0, m.start()) + 1} waitUntil without a final .catch(swLogError)")
+    assert not found, f"sw.js: {found}"
+
+
+def test_no_timer_period_or_ui_setting_is_a_literal():
+    """F20: refresh periods, TTLs, ratios and the toast settings come from app.yaml ui.* (bootstrap and /api/config)."""
+    found = _hits(r"setInterval\([^;]*,\s*[\d_]+\s*\)\s*;?\s*$")
+    found += _hits(r"\b(?:state\.ui|BOOT\.ui|ui)(?:\.\w+)+\s*(?:\|\||\?\?)")
+    assert not found, "timings come from state.ui (app.yaml ui.*), without in-code fallbacks:\n" + "\n".join(found)
+
+
+def test_backend_constant_lists_start_empty():
+    """F22: statusValues and chartViews are filled by /api/config, never seeded with copies."""
+    state_js = (JS_DIR / "state.js").read_text()
+    for field in ("statusValues", "chartViews"):
+        assert re.search(rf"^\s+{field}: \[\],", state_js, re.M), f"{field} starts as []"
+    found = _hits(r"""\[\s*'online',\s*'degraded'|\[\s*'speed',\s*'consistency'|\[\s*'benchmark',\s*'health'""")
+    assert not found, "backend constant lists come from /api/config:\n" + "\n".join(found)
+
+
+# Old spellings the findings named, which no current label uses
+_OLD_LABELS = ("Errors", "Reasoning", "Structured Output", "Structured output")
+
+
+def _label_pairs() -> list[tuple[str, str]]:
+    pairs = [*STATUS_LABELS.items(), *CHART_VIEW_LABELS.items(), *((c["key"], c["label"]) for c in CAPABILITIES)]
+    assert pairs
+    return pairs
+
+
+def test_labels_are_not_redefined_in_the_frontend():
+    """F76, F77, F80: status, chart view and capability labels come from /api/config.
+
+    The copies were maps from a backend key to its label (error: 'Offline', speed: 'TPS + TTFT'),
+    capability options typed into index.html and filter.js, and old spellings that drifted.
+    """
+    found = []
+    for key, label in _label_pairs():
+        found += _hits(rf"""\b{re.escape(key)}['"]?\s*:\s*['"`]{re.escape(label)}['"`]""", allowed=[
+            # The glossary title of the scores help topic, not the chart view label
+            ("help.js", r"^\s+scores: 'Scores',"),
+        ])
+    for cap in CAPABILITIES:
+        found += _hits(rf"""['"]{re.escape(cap["key"])}['"]\s*,\s*label\s*:""")
+    found += _hits(rf"""['"`](?:{'|'.join(map(re.escape, _OLD_LABELS))})['"`]""")
+    found += [f"index.html: data-cap {cap}" for cap in re.findall(r'data-cap="(\w+)"', INDEX_HTML)]
+    assert not found, "read labels through statusLabel/chartViewLabel/state.capabilities:\n" + "\n".join(found)
+
+
+def test_capability_keys_come_from_config():
+    found = _hits(r"""['"]supports_(?:vision|tools|cache|structured_output)['"]""")
+    assert not found, "capability keys come from state.capabilities:\n" + "\n".join(found)
+
+
+def test_score_tiers_come_from_config():
+    """F81: score boundaries and tier names are color_thresholds.scores and color_thresholds.tiers."""
+    found = _hits(r"""[<>]=?\s*(?:80|60|40|20)\b(?!\s*[*/])|['"`](?:Excellent|Good|Bad|Critical)['"`]""", allowed=[
+        # Seconds and minutes in duration formatting
+        ("format.js", r"\b[sm] < 60\b"),
+    ])
+    assert not found, "score tiers come from state.colorThresholds:\n" + "\n".join(found)
+
+
+def test_breakpoint_and_default_ranges_have_one_home():
+    """F85: 640 is BP_SM in utils.js; default ranges are app.yaml ui.default_ranges."""
+    found = _hits(r"\b640\b", allowed=[("utils.js", r"^export const BP_SM = 640;")])
+    found += _hits(r"<=\s*BP_SM")
+    found += _hits(r"""(?<!getContext\()['"`]\d+[hdw]['"`]""")
+    assert not found, "use isPhone()/BP_SM and state.ui.default_ranges:\n" + "\n".join(found)
+
+
+def test_help_texts_do_not_restate_config_values():
+    """F78: the stall threshold, hiccup multiplier and degradation rule come from /api/config."""
+    help_block = re.search(r"^export const HELP = \{(.*?)^\};", (JS_DIR / "utils.js").read_text(), re.S | re.M).group(1)
+    # "1x = token-by-token" defines the batching unit; a multiplier above 1 is a setting
+    found = re.findall(r"\d+\s*ms\b|\b(?:[2-9]|\d{2,})(?:\.\d+)?\s*(?:x|\u00d7|\\u00d7)(?!\w)|one or more (?:metric|Critical)", help_block)
+    assert not found, f"HELP restates config values: {found}"
+
+
+def test_no_rendered_em_or_en_dashes():
+    """F79: prose uses no em or en dashes (CONTRIBUTING), in code, markup and the labels the backend sends."""
+    dash = re.compile(rf"{_char_forms((0x2014, 0x2013))}|&[mn]dash;")
+    sources = [*JS_FILES, SW_JS, FRONTEND_DIR / "index.html", FRONTEND_DIR / "manifest.json",
+               BACKEND_DIR / "state.py", BACKEND_DIR / "routes.py"]
+    found = [f"{f.name}:{n}" for f in sources for n, line in enumerate(f.read_text().splitlines(), 1) if dash.search(line)]
+    assert not found, f"em/en dashes: {found}"
+
+
+def test_every_static_id_is_used():
+    """F57: #config-warning was markup nothing ever filled; an id in index.html is read by a script or a style."""
+    code = "\n".join(f.read_text() for f in JS_FILES) + INDEX_HTML
+    unused = []
+    for id_ in re.findall(r'\sid="([\w-]+)"', INDEX_HTML):
+        uses = len(re.findall(rf"#{re.escape(id_)}\b|['\"`]{re.escape(id_)}['\"`]|(?:for|aria-\w+|href)=\"#?{re.escape(id_)}\"", code))
+        prefixed = re.search(rf"['\"`]{re.escape(id_.rsplit('-', 1)[0])}-['\"`]?\s*\+|`{re.escape(id_.rsplit('-', 1)[0])}-\$\{{", code)
+        if not uses and not prefixed:
+            unused.append(id_)
+    assert "config-warning" not in INDEX_HTML
+    assert not unused, f"ids nothing reads: {unused}"
 
 
 # ── npm scripts ─────────────────────────────────────────────────────────────

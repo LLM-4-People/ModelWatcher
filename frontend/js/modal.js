@@ -2,23 +2,23 @@
 // table with sort/pagination, and audit suites. updateModalIfNeeded does a
 // lightweight DOM refresh (no rebuild) when the open model receives a WS result.
 import { state, LS } from './state.js';
-import { slug, esc, logError, logDebug, logTag, collapsibleHTML, toggleCollapsible, BP_SM, kvRow, kvSep, kvGrids, setHTML, STATUS_GLYPH, SEP_TEXT, segmentsHTML } from './utils.js';
-import { _tierColor, tpsColor, ttftColor, uptimeColor, p99ItlColor, tailColor, batchingColor, stallColor, fmtNum, fmtTps, fmtTTFT, fmtUptime, fmtTail, fmtBatching, fmtCritical, fmtMsCompact, fmtContext, fmtPrice, fmtPricePair, fmtEventTime, timeAgo, STATUS_TEXT, recordErrorText, degradedDescHTML, metricCellHTML, moeDetail, testTypeLabel } from './format.js';
-import { _loadChartJS, initChart, updateChartView, CHART_VIEWS, clearModelChartCache, chartPhHTML } from './chart.js';
+import { slug, esc, logError, logDebug, logTag, collapsibleHTML, toggleCollapsible, isPhone, kvRow, kvSep, kvGrids, setHTML, STATUS_GLYPH, SEP_TEXT, sepHTML, segmentsHTML, pushLayer, trapFocus } from './utils.js';
+import { secondaryModelId, _tierColor, fmtNum, fmtMsCompact, fmtContext, fmtPrice, fmtPricePair, fmtEventTime, timeAgo, STATUS_TEXT, recordErrorText, degradedDescHTML, moeDetail, testTypeLabel, statusLabel, metricLabel, metricTileHTML, modelCapabilities, chartViews } from './format.js';
+import { _loadChartJS, initChart, updateChartView, clearModelChartCache, chartPhHTML } from './chart.js';
 import { cardBadges, reliableIndicator, renderModalCheckLine, providerName, _statusMessage, _eventTimestamp, _healthErrorIfNewer, statusDecorState, applyStatusDecor } from './dom.js';
 import { api, fetchModelInfoDetail } from './api.js';
 import { registerTip, clearTips } from './tooltips.js';
 import {
   _sinceForRange, _rangeLabel, _updateRangeUI,
-  _rangePillsHTML, _applyChartRange, _applyCustomRange,
+  _rangePillsHTML, _applyChartRange,
   _fetchForRange, _fetchHealthForRange, _updateChartViewUI,
   _openDateRangePicker, _closeDateRangePopover,
-  _isRangeEligible,
   setHistFetchFn, setModalBucketsFn, setModalInfoHTMLFn,
   setOpenModelKey as setRangeOpenModelKey, setHealthBuckets,
   getHealthBuckets, getHistSince, getHistUntil, getChartSince, getTimeRange, getFetchSeq,
   resetRangeState, initRangeStateForOpen,
 } from './modal-ranges.js';
+import { CUSTOM } from './ranges.js';
 import {
   _historyRowsHTML, _renderSortedData, _bindSortHeaders, _updateSortHeaders,
   _fetchInitialHistory, _bindAccordionToggles,
@@ -39,25 +39,28 @@ function _modalTitleHTML(entry) {
   const logo = state.providerLogos[entry.provider] || '';
   const url = state.providerUrls[entry.provider] || '';
   const title = state.providerTitles[entry.provider] || '';
-  const isMobile = window.innerWidth <= BP_SM;
   const pCls = 'text-text-primary';
   let provider;
-  if (isMobile && logo) {
+  if (isPhone() && logo) {
     const imgTag = `<img src="${esc(logo)}" alt="${esc(entry.provider)}" class="provider-logo" loading="lazy">`;
     const linkCls = `provider-link transition-colors ${pCls}`.trim();
     let tipAttr = '';
-    if (title) { const id = `prov-${Date.now()}`; registerTip(id, esc(title)); tipAttr = ` data-tip-id="${id}"`; }
+    if (title) { const id = `tip-prov-${slug(entry.provider)}`; registerTip(id, esc(title)); tipAttr = ` data-tip-id="${id}"`; }
     provider = url
       ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="${linkCls}"${tipAttr}>${imgTag}</a>`
       : `<span class="${pCls}"${tipAttr}>${imgTag}</span>`;
   } else {
     provider = providerName(entry.provider, url, pCls, logo, title);
   }
-  const line = segmentsHTML([provider, `<span class="text-text-secondary">${esc(entry.name)}</span>`], { sep: 'dot', cls: 'whitespace-nowrap' });
-  return `${line}<div class="text-xs font-mono text-text-muted ml-0 overflow-hidden text-ellipsis whitespace-nowrap">${esc(entry.model_id)}</div>`;
+  // Centred row: the provider link holds a logo, whose baseline is not the text's (finding F28)
+  const line = segmentsHTML([provider, `<span class="text-text-secondary">${esc(entry.name)}</span>`], { sep: 'dot', cls: 'whitespace-nowrap seg-center' });
+  const secondary = secondaryModelId(entry);
+  return `${line}${secondary ? `<div class="text-xs font-mono text-text-muted ml-0 overflow-hidden text-ellipsis whitespace-nowrap">${esc(secondary)}</div>` : ''}`;
 }
 
 let _dataAgeSec = 0;
+let _popLayer = null;
+let _releaseFocus = null;
 
 let _modalBuckets = [];
 let _openModelKey = null;
@@ -103,6 +106,7 @@ function _fetchModelInfoDetail(modelId) {
 
 function _rawRow(label, value, unit) {
   if (value == null) return '';
+  label = esc(label);
   if (unit === 'ms' && value >= 1000) {
     const s = (value / 1000).toFixed(2);
     return kvRow(label + ':', `${s}<span class="kv-unit">s</span>`, { mono: true });
@@ -118,28 +122,28 @@ function _rawSectionHTML(lt) {
   if (lt.completion_tokens != null) output.push(_rawRow('Completion tokens', lt.completion_tokens));
   if (lt.token_count != null) output.push(_rawRow('Chunks observed', lt.token_count));
   if (lt.reasoning_tokens != null) output.push(_rawRow('Reasoning tokens', lt.reasoning_tokens));
-  if (lt.chunk_token_cv != null) output.push(_rawRow('Chunk CV', lt.chunk_token_cv));
+  if (lt.chunk_token_cv != null) output.push(_rawRow(metricLabel('chunk_token_cv'), lt.chunk_token_cv));
   if (lt.chunk_token_max != null) output.push(_rawRow('Max chunk', lt.chunk_token_max, 'tok'));
   if (lt.finish_reason) output.push(kvRow('Finish reason:', esc(lt.finish_reason)));
   const itl = [];
-  if (lt.raw_median_itl_ms != null) itl.push(_rawRow('Med ITL (raw)', lt.raw_median_itl_ms, 'ms'));
-  if (lt.raw_avg_itl_ms != null) itl.push(_rawRow('Avg ITL (raw)', lt.raw_avg_itl_ms, 'ms'));
-  if (lt.raw_max_itl_ms != null) itl.push(_rawRow('Max ITL (raw)', lt.raw_max_itl_ms, 'ms'));
+  if (lt.raw_median_itl_ms != null) itl.push(_rawRow(metricLabel('raw_median_itl_ms'), lt.raw_median_itl_ms, 'ms'));
+  if (lt.raw_avg_itl_ms != null) itl.push(_rawRow(metricLabel('raw_avg_itl_ms'), lt.raw_avg_itl_ms, 'ms'));
+  if (lt.raw_max_itl_ms != null) itl.push(_rawRow(metricLabel('raw_max_itl_ms'), lt.raw_max_itl_ms, 'ms'));
   if (lt.hiccup_count != null) itl.push(_rawRow('Hiccups', lt.hiccup_count));
   const eff = [];
-  if (lt.effective_median_itl_ms != null) eff.push(_rawRow('Med ITL (eff.)', lt.effective_median_itl_ms, 'ms'));
-  if (lt.effective_avg_itl_ms != null) eff.push(_rawRow('Avg ITL (eff.)', lt.effective_avg_itl_ms, 'ms'));
-  if (lt.effective_p99_itl_ms != null) eff.push(_rawRow('P99 ITL (eff.)', lt.effective_p99_itl_ms, 'ms'));
-  if (lt.effective_itl_tail_ratio != null) eff.push(_rawRow('Tail ratio (eff.)', lt.effective_itl_tail_ratio, '×'));
+  if (lt.effective_median_itl_ms != null) eff.push(_rawRow(metricLabel('effective_median_itl_ms'), lt.effective_median_itl_ms, 'ms'));
+  if (lt.effective_avg_itl_ms != null) eff.push(_rawRow(metricLabel('effective_avg_itl_ms'), lt.effective_avg_itl_ms, 'ms'));
+  if (lt.effective_p99_itl_ms != null) eff.push(_rawRow(metricLabel('effective_p99_itl_ms'), lt.effective_p99_itl_ms, 'ms'));
+  if (lt.effective_itl_tail_ratio != null) eff.push(_rawRow(metricLabel('effective_itl_tail_ratio'), lt.effective_itl_tail_ratio, '\u00d7'));
   const timing = [];
-  if (lt.tpot_ms != null) timing.push(_rawRow('TPOT', lt.tpot_ms, 'ms'));
+  if (lt.tpot_ms != null) timing.push(_rawRow(metricLabel('tpot_ms'), lt.tpot_ms, 'ms'));
   if (lt.total_latency_ms != null) timing.push(_rawRow('Total latency', lt.total_latency_ms, 'ms'));
   if (lt.thinking_duration_ms != null) timing.push(_rawRow('Thinking duration', lt.thinking_duration_ms, 'ms'));
   const network = [];
-  if (lt.network_jitter_ms != null) network.push(_rawRow('Net jitter', lt.network_jitter_ms, 'ms'));
+  if (lt.network_jitter_ms != null) network.push(_rawRow(metricLabel('network_jitter_ms'), lt.network_jitter_ms, 'ms'));
   if (lt.shrinkage_factor != null) network.push(kvRow('Shrinkage:', `${(lt.shrinkage_factor * 100).toFixed(0)}<span class="kv-unit">%</span>`, { mono: true }));
   if (lt.burst_arrivals != null) network.push(_rawRow('Burst arrivals', lt.burst_arrivals));
-  if (lt.burst_arrival_pct != null) network.push(kvRow('Burst %:', `${lt.burst_arrival_pct.toFixed(0)}<span class="kv-unit">%</span>`, { mono: true }));
+  if (lt.burst_arrival_pct != null) network.push(kvRow(`${esc(metricLabel('burst_arrival_pct'))}:`, `${lt.burst_arrival_pct.toFixed(0)}<span class="kv-unit">%</span>`, { mono: true }));
   if (lt.frame_batch_pct != null) network.push(kvRow('Frame batch:', `${lt.frame_batch_pct.toFixed(0)}<span class="kv-unit">%</span>`, { mono: true }));
   const stalls = [];
   if (lt.stall_first_pct != null) stalls.push(kvRow('First stall:', `${lt.stall_first_pct.toFixed(0)}<span class="kv-unit">%</span>`, { mono: true }));
@@ -284,12 +288,7 @@ function _modelInfoSectionHTML(entry) {
   const price = fmtPricePair(e.input_price, e.output_price);
   const cachePrice = e.cache_price != null ? fmtPrice(e.cache_price) : '';
   const outCtx = e.output_context ? fmtContext(e.output_context) : '';
-  const caps = [];
-  if (e.supports_vision) caps.push('Vision');
-  if (e.supports_tools) caps.push('Tools');
-  if (e.supports_cache) caps.push('Prompt caching');
-  if (e.supports_structured_output) caps.push('Structured output');
-  if (e.thinking) caps.push('Thinking');
+  const caps = modelCapabilities(e).map(c => c.label);
   const _hasParams = e.param_count && e.param_count !== '0';
   const _hasMoe = !!e.num_experts;
   if (!ctx && !price && !caps.length && !e.description && !e.owner && !e.modalities && !e.tokenizer && !e.license && !e.quantization && !e.served_by && !e.architecture && !_hasParams && !_hasMoe && !e.fingerprint && !e.served_model && !e.fp_server && !e.fp_features) return '';
@@ -329,13 +328,16 @@ function _modelInfoSectionHTML(entry) {
   if (e.license) tech.push(kvRow('License:', esc(e.license)));
   if (tech.length) { rows.push(kvSep()); rows.push(...tech); }
   if (e.description) { rows.push(kvSep()); rows.push(kvRow('About:', esc(e.description))); }
-  const open = _modelInfoOpen ?? _isAccOpen('model-info', window.innerWidth >= BP_SM);
+  const open = _modelInfoOpen ?? _isAccOpen('model-info', !isPhone());
   return collapsibleHTML({
     id: 'model-info', title: 'MODEL INFO',
     bodyHTML: kvGrids(rows),
     open, wrapperCls: 'bg-overlay rounded-lg mb-4 overflow-hidden',
   });
 }
+
+// The modal's tiles and label forms; the card shows four of the same definitions (finding F58)
+const _MODAL_TILES = [['uptime', 'full'], ['tps', 'full'], ['ttft', 'full'], ['p99', 'full'], ['stalls', 'full'], ['tail', 'short'], ['batch', 'short'], ['jitter', 'short']];
 
 function _modalInfoHTML(entry, data) {
   const lt = data.last_test || {};
@@ -360,23 +362,19 @@ function _modalInfoHTML(entry, data) {
       const eventTs = _eventTimestamp(data, lt);
       const healthNewer = !!_healthErrorIfNewer(data, lt);
       const rid = healthNewer ? (data.health_request_id || lt.request_id) : lt.request_id;
+      // Prose, not a flex row: the message wraps at any character, so a long URL cannot push
+      // the words out of the box (finding F27); the time and its separator lead inline
+      const when = eventTs ? `<span class="text-text-muted whitespace-nowrap">${esc(fmtEventTime(eventTs))}</span>${sepHTML('dot')}` : '';
       return `
     <div class="${isDeg ? 'bg-warn-500/10 border-warn-500/20' : 'bg-danger-500/10 border-danger-500/20'} border rounded-lg p-3 mb-4">
-      <div class="text-xs font-medium ${isDeg ? 'text-warn-400' : 'text-danger-400'} mb-1">${isDeg ? `${STATUS_GLYPH.degraded} Degraded` : 'Error'}</div>
-      <div class="border-t border-surface-700/30 mb-2"></div><div class="text-[10px] ${isDeg ? STATUS_TEXT.degraded : STATUS_TEXT.error} font-mono">${segmentsHTML([eventTs ? `<span class="text-text-muted whitespace-nowrap">${esc(fmtEventTime(eventTs))}</span>` : '', `<span>${isDeg && lt.degraded ? degradedDescHTML(lt) : esc(msg || recordErrorText(lt))}</span>`], { sep: 'dot' })}</div>
+      <div class="text-xs font-medium ${isDeg ? 'text-warn-400' : 'text-danger-400'} mb-1">${isDeg ? `${STATUS_GLYPH.degraded} ${esc(statusLabel('degraded'))}` : 'Error'}</div>
+      <div class="border-t border-surface-700/30 mb-2"></div><div class="modal-error-text text-[10px] ${isDeg ? STATUS_TEXT.degraded : STATUS_TEXT.error} font-mono">${when}<span>${isDeg && lt.degraded ? degradedDescHTML(lt) : esc(msg || recordErrorText(lt))}</span></div>
       ${rid ? `<div class="text-[10px] text-text-muted/60 font-mono mt-1.5" title="Provider request ID">req: ${esc(rid)}</div>` : ''}
     </div>`;
     })()}
     ${_modelInfoSectionHTML(entry)}
     <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-5">
-      ${data.uptime_pct != null ? metricCellHTML({ label: 'Uptime', tipKey: 'uptime', colorVar: 'uptime', valueCls: uptimeColor(data.uptime_pct), valueHTML: fmtCritical('uptime', data.uptime_pct, fmtUptime(data.uptime_pct)), mode: 'modal' }) : ''}
-      ${lt.tps != null ? metricCellHTML({ label: 'TPS', tipKey: 'tps', colorVar: 'tps', valueCls: tpsColor(lt.tps), valueHTML: fmtCritical('tps', lt.tps, fmtTps(lt.tps)), mode: 'modal' }) : ''}
-      ${lt.ttft_ms != null ? metricCellHTML({ label: 'TTFT', tipKey: 'ttft', colorVar: 'ttft', valueCls: ttftColor(lt.ttft_ms), valueHTML: fmtCritical('ttft', lt.ttft_ms, fmtTTFT(lt.ttft_ms)), mode: 'modal' }) : ''}
-      ${lt.raw_p99_itl_ms != null ? metricCellHTML({ label: 'P99 ITL (raw)', tipKey: 'p99Itl', colorVar: 'tails', valueCls: p99ItlColor(lt.raw_p99_itl_ms), valueHTML: fmtCritical('raw_p99_itl_ms', lt.raw_p99_itl_ms, fmtMsCompact(lt.raw_p99_itl_ms)), mode: 'modal', extra: reliableIndicator(lt.itl_reliable, true, lt, 'itlReliable') }) : ''}
-      ${lt.stall_count ? metricCellHTML({ label: 'Stalls', tipKey: 'stall', valueCls: stallColor(lt.stall_count), valueHTML: String(lt.stall_count), mode: 'modal' }) : ''}
-      ${lt.effective_itl_tail_ratio != null ? metricCellHTML({ label: 'Tail (eff.)', tipKey: 'itlTailRatio', valueCls: tailColor(lt.effective_itl_tail_ratio), valueHTML: fmtCritical('effective_itl_tail_ratio', lt.effective_itl_tail_ratio, fmtTail(lt.effective_itl_tail_ratio)), mode: 'modal' }) : ''}
-      ${lt.chunk_token_ratio != null ? metricCellHTML({ label: 'Batch', tipKey: 'batching', valueCls: batchingColor(lt.chunk_token_ratio), valueHTML: fmtBatching(lt.chunk_token_ratio), mode: 'modal' }) : ''}
-      ${lt.network_jitter_ms != null ? metricCellHTML({ label: 'Jitter', tipKey: 'networkJitter', valueCls: 'text-text-primary', valueHTML: fmtMsCompact(lt.network_jitter_ms), mode: 'modal' }) : ''}
+      ${_MODAL_TILES.map(([key, form]) => metricTileHTML(key, data, { mode: 'modal', form, extra: key === 'p99' ? reliableIndicator(lt.itl_reliable, true, lt, 'itlReliable') : '' })).join('')}
     </div>
 
     ${_rawSectionHTML(lt)}
@@ -395,46 +393,9 @@ export function openModal(key) {
   setHealthBuckets(null);
   resetHistoryForOpen();
   const data = state.metrics[entry.id] || {};
-
   const ranges = state.timeRanges;
-
-  const _isMobile = window.innerWidth < BP_SM;
-  const DEFAULT_CHART_RANGE = _isMobile ? '24h' : '7d';
-  const DEFAULT_HIST_RANGE = _isMobile ? '4h' : '3d';
-  const savedRange = localStorage.getItem('mw_chart_range') || '';
-  const eligibleKeys = new Set(ranges.map(r => r.key));
   const availableRanges = data.available_ranges || [];
-
-  const isEligible = (r) => _isRangeEligible(r, availableRanges);
-
-  let rangeKey;
-  const isFreshOpen = !savedRange;
-  if (eligibleKeys.has(savedRange)) {
-    const savedR = ranges.find(r => r.key === savedRange);
-    if (savedR && isEligible(savedR)) {
-      rangeKey = savedRange;
-    }
-  }
-  if (!rangeKey) {
-    const defaultR = ranges.find(r => r.key === DEFAULT_CHART_RANGE);
-    if (isFreshOpen && defaultR && isEligible(defaultR)) {
-      rangeKey = DEFAULT_CHART_RANGE;
-    }
-  }
-  if (!rangeKey) {
-    const savedSec = ranges.find(r => r.key === savedRange)?.seconds || 0;
-    const candidates = ranges.filter(r => isEligible(r) && r.key !== 'max');
-    const under = savedSec > 0
-      ? candidates.filter(r => r.seconds <= savedSec).sort((a, b) => b.seconds - a.seconds)
-      : [];
-    const over = savedSec > 0
-      ? candidates.filter(r => r.seconds > savedSec).sort((a, b) => a.seconds - b.seconds)
-      : candidates.sort((a, b) => b.seconds - a.seconds);
-    rangeKey = under.length > 0
-      ? under[0].key
-      : (over.length > 0 ? over[0].key : 'max');
-  }
-  initRangeStateForOpen(rangeKey, ranges, availableRanges, isEligible, DEFAULT_HIST_RANGE);
+  const rangeKey = initRangeStateForOpen(availableRanges);
   const dataStartEpoch = data.data_start_epoch;
   _dataAgeSec = dataStartEpoch ? (Date.now() / 1000 - dataStartEpoch) : 0;
 
@@ -443,17 +404,26 @@ export function openModal(key) {
   if (titleEl) titleEl.innerHTML = _modalTitleHTML(entry);
   renderModalCheckLine(entry.id);
   const badgesEl = document.getElementById('modal-badges');
-  if (badgesEl) badgesEl.innerHTML = cardBadges(data.last_test || {}, data.status, data, entry);
+  if (badgesEl) badgesEl.innerHTML = cardBadges(data.last_test || {}, data.status, data, entry, { focusable: true });
   const decor = document.getElementById('modal-decor');
   applyStatusDecor(decor, data);
   if (decor) decor.classList.add('fade-in');
   if (modalEl) { modalEl.classList.remove('hidden'); modalEl.classList.add('flex'); }
+  // A layer for Escape and a focus trap: focus moves into the dialog, the page behind is inert and
+  // does not scroll, and focus returns to the card on close (findings F49, F72)
+  if (!_releaseFocus) {
+    _popLayer = pushLayer(closeModal);
+    // Opened by a click on the card body, focus goes back to the card's own button
+    const active = document.activeElement;
+    const returnTo = active && active !== document.body ? active : document.getElementById(`card-title-${slug(entry.id)}`);
+    _releaseFocus = trapFocus(modalEl, { focus: document.getElementById('modal-close'), returnTo });
+  }
 
   _modalBuckets = [];
   const history = _activeHistory();
 
-  const savedView = (localStorage.getItem('mw_chart_view') || '').trim();
-  const view = (savedView === 'speed' || savedView === 'consistency' || savedView === 'scores' || savedView === 'health') ? savedView : 'speed';
+  const savedView = localStorage.getItem(LS.CHART_VIEW);
+  const view = state.chartViews.includes(savedView) ? savedView : state.chartViews[0];
 
   const rangePillsHTML = _rangePillsHTML(ranges, rangeKey, availableRanges, 'range');
 
@@ -464,9 +434,9 @@ export function openModal(key) {
       ${rangePillsHTML}
     </div>
     <div class="flex items-center gap-1.5 mb-2 shrink-0">
-      ${CHART_VIEWS.map(v => `<button id="chart-view-${v.key}" class="chart-view-pill${view === v.key ? ' active' : ''}" data-view="${v.key}" data-tip="${v.tip}" tabindex="0">${v.label}</button>`).join('')}
+      ${chartViews().map(v => `<button type="button" id="chart-view-${v.key}" class="chart-view-pill${view === v.key ? ' active' : ''}" data-view="${v.key}" data-tip="${v.tip}" aria-pressed="${view === v.key}">${esc(v.label)}</button>`).join('')}
     </div>
-    <div class="mb-5 relative shrink-0 h-[300px]"><canvas id="modal-chart" class="w-full h-full"></canvas>${chartPhHTML('modal-chart')}</div>
+    <div class="mb-5 relative shrink-0 h-[300px]"><canvas id="modal-chart" class="w-full h-full" role="img" aria-label="Chart of the model's metrics over the selected range"></canvas>${chartPhHTML('modal-chart')}</div>
     <div id="modal-deferred"></div>
   `;
 
@@ -478,11 +448,11 @@ export function openModal(key) {
     slot.outerHTML = `
     <div class="flex items-center gap-2 mb-2 shrink-0">
       <span class="text-xs font-medium text-text-primary">History</span>
-      ${['health', 'benchmark'].map(t => `<button id="hist-tab-${t}" class="chart-view-pill${getHistoryTab() === t ? ' active' : ''}" data-hist-tab="${t}">${esc(testTypeLabel(t))}</button>`).join('')}
-        <button id="toggle-cols" class="chart-view-pill${_showTier2() ? ' active' : ''}${BENCH_COLS.some(c => c.tier2) && getHistoryTab() === 'benchmark' ? '' : ' hidden'}" data-tip="toggleColumns">+ Columns</button>
+      ${['health', 'benchmark'].map(t => `<button type="button" id="hist-tab-${t}" class="chart-view-pill${getHistoryTab() === t ? ' active' : ''}" data-hist-tab="${t}">${esc(testTypeLabel(t))}</button>`).join('')}
+        <button type="button" id="toggle-cols" class="chart-view-pill${_showTier2() ? ' active' : ''}${BENCH_COLS.some(c => c.tier2) && getHistoryTab() === 'benchmark' ? '' : ' hidden'}" data-tip="toggleColumns">+ Columns</button>
      </div>
      <div class="flex items-center gap-2 mb-2 shrink-0">
-       <button class="chart-view-pill" id="hist-custom-range" data-tip="customDateRange"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="3" width="13" height="11" rx="2"/><path d="M1.5 7h13M5 1v4M11 1v4"/></svg></button>
+       <button type="button" class="chart-view-pill" id="hist-custom-range" data-tip="customDateRange" aria-label="Custom date range for the history" aria-haspopup="dialog"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="3" width="13" height="11" rx="2"/><path d="M1.5 7h13M5 1v4M11 1v4"/></svg></button>
        <span class="text-[10px] text-text-muted" id="hist-range-label">${_rangeLabel(getHistSince(), getHistUntil())}</span>
       </div>
         <div class="hidden sm:block w-full">
@@ -506,8 +476,8 @@ export function openModal(key) {
     if (toggleBtn) {
       toggleBtn.classList.toggle('active', _showTier2());
       toggleBtn.addEventListener('click', () => {
-        const show = localStorage.getItem('mw_table_cols') !== '1';
-        localStorage.setItem('mw_table_cols', show ? '1' : '0');
+        const show = localStorage.getItem(LS.TABLE_COLS) !== '1';
+        localStorage.setItem(LS.TABLE_COLS, show ? '1' : '0');
         _renderSortedData(true);
         toggleBtn.classList.toggle('active', show);
       });
@@ -565,7 +535,7 @@ export function openModal(key) {
       btn.addEventListener('click', () => {
         if (btn.disabled) return;
         const newRange = btn.dataset.range;
-        if (newRange === 'custom') {
+        if (newRange === CUSTOM) {
           _openDateRangePicker(btn, dataStartEpoch, 'chart');
           return;
         }
@@ -574,14 +544,14 @@ export function openModal(key) {
       });
     });
 
-    document.querySelectorAll('#chart-view-speed, #chart-view-consistency, #chart-view-scores, #chart-view-health').forEach(btn => {
+    document.querySelectorAll('[data-view]').forEach(btn => {
       btn.addEventListener('click', () => {
         const newView = btn.dataset.view;
         if (!newView) return;
-        const current = localStorage.getItem('mw_chart_view') || 'speed';
+        const current = state.charts['modal-chart']?._view ?? view;
         if (newView === current) return;
-        localStorage.setItem('mw_chart_view', newView);
-        const since = getTimeRange() === 'custom' ? getChartSince() : _sinceForRange(getTimeRange());
+        localStorage.setItem(LS.CHART_VIEW, newView);
+        const since = getTimeRange() === CUSTOM ? getChartSince() : _sinceForRange(getTimeRange());
         if (newView === 'health' && getHealthBuckets() === null) {
           _fetchHealthForRange(openId, since, getFetchSeq());
         } else if (newView === 'health' && getHealthBuckets()) {
@@ -601,6 +571,8 @@ export function openModal(key) {
 }
 
 export function closeModal() {
+  _popLayer?.();
+  _popLayer = null;
   _closeDateRangePopover();
   resetRangeState();
   resetHistoryState();
@@ -615,6 +587,8 @@ export function closeModal() {
   const decor = document.getElementById('modal-decor');
   if (decor) decor.classList.remove('fade-in');
   if (modalEl) { modalEl.classList.add('hidden'); modalEl.classList.remove('flex'); }
+  _releaseFocus?.();
+  _releaseFocus = null;
   applyStatusDecor(decor, {});
   if (state.charts['modal-chart']) { state.charts['modal-chart'].destroy(); delete state.charts['modal-chart']; }
 }
@@ -627,7 +601,7 @@ export function updateModalIfNeeded(modelId, { record, testType } = {}) {
 
   setHTML(document.getElementById('modal-title'), _modalTitleHTML(entry));
   renderModalCheckLine(modelId);
-  setHTML(document.getElementById('modal-badges'), cardBadges(data.last_test || {}, data.status, data, entry));
+  setHTML(document.getElementById('modal-badges'), cardBadges(data.last_test || {}, data.status, data, entry, { focusable: true }));
   applyStatusDecor(document.getElementById('modal-decor'), data);
   setHTML(document.getElementById('modal-info'), _modalInfoHTML(entry, data));
 

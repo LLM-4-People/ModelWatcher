@@ -37,7 +37,9 @@ test('a nested group is itself a segment list, so the gap applies inside it too'
   assert.equal(outer.match(/class="seg-list/g).length, 2);
 });
 
-test('copied text keeps a space around every item', () => {
+// Text content, not what a selection copies: flex items are blocks, so a copy puts each on its own
+// line (finding F31, covered by tests/e2e/segments.test.mjs)
+test('the text content keeps a space around every item', () => {
   const html = segmentsHTML(['<i>8:16 PM</i>', '<i>HTTP 503</i>'], { sep: 'dot' });
   const text = html.replace(/<[^>]+>/g, '');
   assert.equal(text, `8:16 PM ${SEP.dot} HTTP 503`);

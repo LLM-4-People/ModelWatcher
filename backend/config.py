@@ -12,7 +12,7 @@ import yaml
 
 from backend.state import (
     c, app_cfg, models_cfg, model_registry, model_cache, log, log_error,
-    apply_log_level, LOG_LEVELS,
+    apply_log_level, LOG_LEVELS, TREND_METRICS,
     CONFIG_DIR, awatch, ensure_scheme, make_model_key,
 )
 from backend.models import build_model_registry
@@ -162,7 +162,7 @@ def _validate_host_patterns(path: str, value):
 
 
 _APP_SECTIONS = (
-    "app", "testing", "metrics", "stalls", "server", "websocket",
+    "app", "testing", "metrics", "stalls", "server", "websocket", "ui",
     "notifications", "color_thresholds", "scores", "time_ranges", "auto_archive",
 )
 _NOTIFICATION_EVENTS = (
@@ -172,8 +172,30 @@ _NOTIFICATION_EVENTS = (
 _THRESHOLD_METRICS = (
     "uptime", "tps", "ttft", "stall_count", "raw_p99_itl_ms", "raw_median_itl_ms",
     "raw_max_itl_ms", "effective_itl_tail_ratio", "chunk_token_ratio", "burst_arrival_pct",
-    "chunk_token_cv",
+    "chunk_token_cv", "scores",
 )
+# Browser timings in seconds (ui.*), each > 0
+_TREND_SETTINGS = ("trend_window", "trend_deadbands", "min_data_points_trend")
+_UI_SECONDS = ("check_line_refresh", "metrics_poll", "deploy_poll", "provider_data_max_age",
+               "chart_update_interval", "chart_offscreen_destroy", "chart_cleanup_interval")
+_UI_CACHE_ITEMS = ("config", "providers", "model_info", "metrics", "vapid_key")
+_UI_FORM_FACTORS = ("desktop", "phone")
+_UI_RANGE_TARGETS = ("chart", "history")
+
+
+def _validate_thresholds(path: str, thresholds: list, higher_is_better: bool):
+    """Tier boundaries best to worst: strictly decreasing when higher is better; when lower is
+    better strictly increasing and positive, closed by the 0 sentinel of the open-ended worst
+    tier. Anything else scores out of order or below 0 (finding F65)."""
+    if higher_is_better:
+        if any(a <= b for a, b in zip(thresholds, thresholds[1:])):
+            raise ValueError(f"app.yaml: {path} must be strictly decreasing (higher is better)")
+        return
+    *bounds, sentinel = thresholds
+    if sentinel != 0:
+        raise ValueError(f"app.yaml: {path} must end with 0, the sentinel of the open-ended worst tier")
+    if bounds[0] <= 0 or any(a >= b for a, b in zip(bounds, bounds[1:])):
+        raise ValueError(f"app.yaml: {path} must be positive and strictly increasing before the 0 sentinel")
 
 
 def _validate_config(cfg: dict):
@@ -211,7 +233,8 @@ def _validate_config(cfg: dict):
 
     bench = testing["benchmark"]
     _require_keys("testing.benchmark", bench, ("interval", "target_total_tokens", "min_tokens", "min_chunks", "stagger",
-                                               "prompts", "token_encoding", "token_encoding_retry"))
+                                               "prompts", "token_encoding", "token_encoding_retry",
+                                               "degraded_critical_metrics"))
     _validate_int("testing.benchmark.interval", bench["interval"], min_value=60)
     _validate_int("testing.benchmark.target_total_tokens", bench["target_total_tokens"], min_value=1)
     _validate_int("testing.benchmark.min_tokens", bench["min_tokens"], min_value=0)
@@ -222,6 +245,7 @@ def _validate_config(cfg: dict):
     thinking_budget = bench.get("anthropic_thinking_budget")
     if thinking_budget is not None:
         _validate_int("testing.benchmark.anthropic_thinking_budget", thinking_budget, min_value=0)
+    _validate_int("testing.benchmark.degraded_critical_metrics", bench["degraded_critical_metrics"], min_value=1)
     _require_keys("testing.benchmark.prompts", bench["prompts"], ("suffix",))
     _validate_string("testing.benchmark.prompts.suffix", bench["prompts"]["suffix"], allow_empty=True)
 
@@ -243,18 +267,29 @@ def _validate_config(cfg: dict):
 
     metrics = cfg["metrics"]
     _require_keys("metrics", metrics, ("retention_days", "uptime_window", "recent_history", "min_data_points_score",
-                                       "min_data_points_trend", "history_query_limit", "provider_fetch_ttl",
+                                       "min_data_points_trend", "trend_window", "trend_deadbands",
+                                       "history_query_limit", "max_chart_buckets", "provider_fetch_ttl",
+                                       "fetch_timeout", "provider_fetch_concurrency", "model_info_fetch_concurrency",
+                                       "provider_fetch_max_bytes",
                                        "cleanup_interval", "write_batch_interval", "write_batch_max_buffer"))
     _validate_int("metrics.retention_days", metrics["retention_days"], min_value=1)
     _validate_number("metrics.uptime_window", metrics["uptime_window"], min_value=0, inclusive=False)
     _validate_int("metrics.min_data_points_score", metrics["min_data_points_score"], min_value=1)
     _validate_int("metrics.min_data_points_trend", metrics["min_data_points_trend"], min_value=1)
     _validate_int("metrics.history_query_limit", metrics["history_query_limit"], min_value=1)
+    _validate_int("metrics.max_chart_buckets", metrics["max_chart_buckets"], min_value=1)
     _validate_number("metrics.provider_fetch_ttl", metrics["provider_fetch_ttl"], min_value=0)
+    _validate_number("metrics.fetch_timeout", metrics["fetch_timeout"], min_value=0, inclusive=False)
+    for key in ("provider_fetch_concurrency", "model_info_fetch_concurrency", "provider_fetch_max_bytes"):
+        _validate_int(f"metrics.{key}", metrics[key], min_value=1)
     _validate_int("metrics.cleanup_interval", metrics["cleanup_interval"], min_value=60)
     _validate_number("metrics.write_batch_interval", metrics["write_batch_interval"], min_value=0.1)
     _validate_int("metrics.write_batch_max_buffer", metrics["write_batch_max_buffer"], min_value=1)
     _validate_duration("metrics.recent_history", metrics["recent_history"])
+    _validate_duration("metrics.trend_window", metrics["trend_window"])
+    _require_keys("metrics.trend_deadbands", metrics["trend_deadbands"], TREND_METRICS)
+    for key in TREND_METRICS:
+        _validate_number(f"metrics.trend_deadbands.{key}", metrics["trend_deadbands"][key], min_value=0)
 
     stalls = cfg["stalls"]
     stall_keys = ("visible_threshold_ms", "hiccup_threshold_ms", "hiccup_multiplier", "batching_log_threshold")
@@ -295,12 +330,37 @@ def _validate_config(cfg: dict):
     _validate_number("websocket.ping_interval", ws["ping_interval"], min_value=0, inclusive=False)
     _validate_number("websocket.ping_timeout", ws["ping_timeout"], min_value=0, inclusive=False)
 
+    ui = cfg["ui"]
+    _require_keys("ui", ui, (*_UI_SECONDS, "eager_providers", "chart_max_pixel_ratio", "freshness", "cache_ttl",
+                             "default_ranges"))
+    for key in _UI_SECONDS:
+        _validate_number(f"ui.{key}", ui[key], min_value=0, inclusive=False)
+    _validate_int("ui.eager_providers", ui["eager_providers"], min_value=1)
+    _validate_number("ui.chart_max_pixel_ratio", ui["chart_max_pixel_ratio"], min_value=1)
+    freshness = ui["freshness"]
+    _require_keys("ui.freshness", freshness, ("aging_ratio", "stale_ratio"))
+    _validate_number("ui.freshness.aging_ratio", freshness["aging_ratio"], min_value=1)
+    _validate_number("ui.freshness.stale_ratio", freshness["stale_ratio"], min_value=freshness["aging_ratio"], inclusive=False)
+    _require_keys("ui.cache_ttl", ui["cache_ttl"], _UI_CACHE_ITEMS)
+    for key in _UI_CACHE_ITEMS:
+        _validate_int(f"ui.cache_ttl.{key}", ui["cache_ttl"][key], min_value=1)
+    range_keys = [r.get("key") for r in cfg["time_ranges"] if isinstance(r, dict)] if isinstance(cfg["time_ranges"], list) else []
+    _require_keys("ui.default_ranges", ui["default_ranges"], _UI_RANGE_TARGETS)
+    for target in _UI_RANGE_TARGETS:
+        _require_keys(f"ui.default_ranges.{target}", ui["default_ranges"][target], _UI_FORM_FACTORS)
+        for form in _UI_FORM_FACTORS:
+            _validate_choice(f"ui.default_ranges.{target}.{form}", ui["default_ranges"][target][form], range_keys)
+
     notif = cfg["notifications"]
-    _require_keys("notifications", notif, ("enabled", "webhook_timeout", "push_ttl", "events", "degraded_tps_tier",
+    _require_keys("notifications", notif, ("enabled", "webhook_timeout", "push_ttl", "push_timeout", "status_cooldown",
+                                           "metric_cooldown", "events", "degraded_tps_tier",
                                            "degraded_ttft_tier", "in_app", "rate_limits", "webhooks"))
     _validate_bool("notifications.enabled", notif["enabled"])
     _validate_number("notifications.webhook_timeout", notif["webhook_timeout"], min_value=0, inclusive=False)
     _validate_int("notifications.push_ttl", notif["push_ttl"], min_value=0)
+    _validate_number("notifications.push_timeout", notif["push_timeout"], min_value=0, inclusive=False)
+    for key in ("status_cooldown", "metric_cooldown"):
+        _validate_number(f"notifications.{key}", notif[key], min_value=0)
     _require_keys("notifications.events", notif["events"], _NOTIFICATION_EVENTS)
     for key in _NOTIFICATION_EVENTS:
         _validate_bool(f"notifications.events.{key}", notif["events"][key])
@@ -352,6 +412,7 @@ def _validate_config(cfg: dict):
             raise ValueError(f"app.yaml: color_thresholds.{metric}.thresholds must have {len(tiers)} values")
         for idx, threshold in enumerate(thresholds):
             _validate_number(f"color_thresholds.{metric}.thresholds[{idx}]", threshold)
+        _validate_thresholds(f"color_thresholds.{metric}.thresholds", thresholds, metric_cfg["higher_is_better"])
 
     scores = cfg["scores"]
     _require_keys("scores", scores, ("consistency", "speed", "reliability"))
@@ -390,9 +451,11 @@ def _validate_audits_cfg(cfg: dict):
     if not cfg:
         return
     prefix = "audits.yaml:"
-    _require_keys("audit", cfg, ("enabled", "interval"), prefix=prefix)
+    _require_keys("audit", cfg, ("enabled", "interval", "max_error_chars", "max_response_chars"), prefix=prefix)
     _validate_bool("audit.enabled", cfg["enabled"], prefix=prefix)
     _validate_int("audit.interval", cfg["interval"], min_value=60, prefix=prefix)
+    for key in ("max_error_chars", "max_response_chars"):
+        _validate_int(f"audit.{key}", cfg[key], min_value=1, prefix=prefix)
     suites = cfg.get("suites")
     if suites is None:
         return
@@ -493,6 +556,8 @@ def reload_config(log_changes: bool = False) -> dict:
     # Snapshot current values for change detection
     old_c = {k: v for k, v in c.__dict__.items() if not k.startswith("_")} if log_changes else None
     old_recent_history_seconds = getattr(c, 'recent_history_seconds', None)
+    # Trends depend on these too: a change recomputes every model's trends below
+    old_trend_settings = tuple(getattr(c, k, None) for k in _TREND_SETTINGS)
     old_model_ids = {e["id"] for e in model_registry} if model_registry else set()
     old_model_names = {e["id"]: e["name"] for e in model_registry} if model_registry else {}
     old_provider_names = {e.get("name") for e in models_cfg.get("providers", [])} if models_cfg else set()
@@ -566,6 +631,7 @@ def reload_config(log_changes: bool = False) -> dict:
     c.benchmark_stagger = benchmark["stagger"]
     c.benchmark_token_encoding = benchmark["token_encoding"]
     c.benchmark_token_encoding_retry = _parse_duration(benchmark["token_encoding_retry"])
+    c.degraded_critical_metrics = benchmark["degraded_critical_metrics"]
 
     # Health check settings
     c.health_enabled = health["enabled"]
@@ -581,6 +647,8 @@ def reload_config(log_changes: bool = False) -> dict:
         if audits_cfg:
             c.audit_enabled = audits_cfg["enabled"]
             c.audit_interval = audits_cfg["interval"]
+            c.audit_max_error_chars = audits_cfg["max_error_chars"]
+            c.audit_max_response_chars = audits_cfg["max_response_chars"]
             c.audit_suites = _normalize_audit_suites(audits_cfg.get("suites") or {})
         else:
             c.audit_enabled = False
@@ -606,12 +674,19 @@ def reload_config(log_changes: bool = False) -> dict:
         log.warning("recent_history (%ds) < uptime_window (%ds) - uptime may be inaccurate for early data",
                      c.recent_history_seconds, c.uptime_window)
     c.history_query_limit = metrics_cfg["history_query_limit"]
+    c.max_chart_buckets = metrics_cfg["max_chart_buckets"]
     c.provider_fetch_ttl = metrics_cfg["provider_fetch_ttl"]
+    c.fetch_timeout = metrics_cfg["fetch_timeout"]
+    c.provider_fetch_concurrency = metrics_cfg["provider_fetch_concurrency"]
+    c.model_info_fetch_concurrency = metrics_cfg["model_info_fetch_concurrency"]
+    c.provider_fetch_max_bytes = metrics_cfg["provider_fetch_max_bytes"]
     c.cleanup_interval = metrics_cfg["cleanup_interval"]
     c.write_batch_interval = metrics_cfg["write_batch_interval"]
     c.write_batch_max_buffer = metrics_cfg["write_batch_max_buffer"]
     c.min_data_points_score = metrics_cfg["min_data_points_score"]
     c.min_data_points_trend = metrics_cfg["min_data_points_trend"]
+    c.trend_window = _parse_duration(metrics_cfg["trend_window"])
+    c.trend_deadbands = dict(metrics_cfg["trend_deadbands"])
 
     c.stall_visible_ms = stalls["visible_threshold_ms"]
     c.stall_hiccup_ms = stalls["hiccup_threshold_ms"]
@@ -642,6 +717,9 @@ def reload_config(log_changes: bool = False) -> dict:
     c.notif_enabled = notif["enabled"]
     c.notif_webhook_timeout = notif["webhook_timeout"]
     c.notif_push_ttl = notif["push_ttl"]
+    c.notif_push_timeout = notif["push_timeout"]
+    c.notif_status_cooldown = notif["status_cooldown"]
+    c.notif_metric_cooldown = notif["metric_cooldown"]
     c.notif_events = {key: notif["events"][key] for key in _NOTIFICATION_EVENTS}
     c.notif_degraded_tps_tier = notif["degraded_tps_tier"]
     c.notif_degraded_ttft_tier = notif["degraded_ttft_tier"]
@@ -658,6 +736,9 @@ def reload_config(log_changes: bool = False) -> dict:
     c.notif_rate_limit_validate = rate_limits["validate_per_minute"]
     c.notif_rate_limit_client_error = rate_limits["client_error_per_minute"]
     c.notif_webhooks = notif["webhooks"]
+
+    # Browser settings: the page bootstrap and /api/config send them as they are (routes.ui_config)
+    c.ui = new_app_cfg["ui"]
 
     c.color_thresholds = new_app_cfg["color_thresholds"]
 
@@ -727,8 +808,10 @@ def reload_config(log_changes: bool = False) -> dict:
         if log_changes or not old_model_ids:
             log.info("Cleaned up metrics for removed models: %s", stale)
 
-    # Invalidate per-model score caches when history retention changes
-    if c.recent_history_seconds != old_recent_history_seconds and model_cache:
+    # Invalidate per-model score caches and trends when history retention or the trend settings change
+    history_changed = c.recent_history_seconds != old_recent_history_seconds
+    trend_settings_changed = tuple(getattr(c, k) for k in _TREND_SETTINGS) != old_trend_settings
+    if (history_changed or trend_settings_changed) and model_cache:
         from backend.db import _effective_history_cap
         from backend.stats import compute_trends, bench_only
         cap = _effective_history_cap()
@@ -909,7 +992,7 @@ async def config_watcher():
                     result = reload_config(log_changes=True)
                     await apply_db_changes(result)
                     from backend.routes import _config_cache
-                    _config_cache["expires"] = 0
+                    _config_cache["raw"] = None
                     await ws_mgr.broadcast({"type": "config_updated"})
                     if st.config_changed:
                         st.config_changed.set()

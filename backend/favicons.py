@@ -28,10 +28,7 @@ from backend.state import FAVICON_DIR
 
 FAVICON_DIR.mkdir(exist_ok=True)
 
-_MAX_ICON_BYTES = 500_000
-_MAX_HTML_BYTES = 500_000
-_FETCH_TIMEOUT = 15
-_CONCURRENCY = 2
+# Stored logo edge in pixels: the page shows logos at 16 CSS px, sharp up to a pixel ratio of 2
 _LOGO_SIZE = 32
 _MATTE_COLOR = (255, 255, 255)
 _VALID_EXTS = frozenset({".svg", ".png"})
@@ -181,7 +178,7 @@ async def _fetch_homepage(client: httpx.AsyncClient, domain: str, timeout: httpx
     domain (e.g. umans.ai → app.umans.ai). Used by _fetch_icon to fetch the
     favicon from the redirected host instead of the original.
 
-    When the page exceeds _MAX_HTML_BYTES, truncates to that limit rather than
+    When the page exceeds metrics.provider_fetch_max_bytes, truncates to that limit rather than
     discarding entirely - the <head> section with favicon links and <title> is
     almost always near the top of the HTML.
     """
@@ -194,10 +191,10 @@ async def _fetch_homepage(client: httpx.AsyncClient, domain: str, timeout: httpx
         if "html" not in ct:
             return None, None
         final_url = str(resp.url)
-        if len(resp.content) > _MAX_HTML_BYTES:
+        if len(resp.content) > st.c.provider_fetch_max_bytes:
             st.log.debug("Favicon: homepage too large (%d bytes), truncating to %d for head parse",
-                         len(resp.content), _MAX_HTML_BYTES)
-            return resp.content[:_MAX_HTML_BYTES].decode("utf-8", errors="replace"), final_url
+                         len(resp.content), st.c.provider_fetch_max_bytes)
+            return resp.content[:st.c.provider_fetch_max_bytes].decode("utf-8", errors="replace"), final_url
         return resp.text, final_url
     except Exception as e:
         st.log_error(f"Favicon: homepage fetch failed for {domain}", e)
@@ -283,7 +280,7 @@ async def _fetch_icon(client: httpx.AsyncClient, domain: str, timeout: httpx.Tim
 
 def _client_and_domain(base_url: str) -> tuple[httpx.AsyncClient, str, httpx.Timeout]:
     """Return (client, root_url, timeout) for a provider base URL."""
-    return st.get_http_client(), root_url(base_url), httpx.Timeout(_FETCH_TIMEOUT, connect=5)
+    return st.get_http_client(), root_url(base_url), st.fetch_timeout()
 
 
 async def _save_title(provider_name: str, base_url: str, title: str | None, *, mark_fetched: bool = False) -> None:
@@ -313,8 +310,8 @@ async def fetch_provider_favicon(provider_name: str, base_url: str) -> str | Non
             await _save_title(provider_name, base_url, title, mark_fetched=True)
             return None
 
-        if len(resp.content) > _MAX_ICON_BYTES:
-            st.log.info("Favicon: %s too large (%d bytes, limit %d)", provider_name, len(resp.content), _MAX_ICON_BYTES)
+        if len(resp.content) > st.c.provider_fetch_max_bytes:
+            st.log.info("Favicon: %s too large (%d bytes, limit %d)", provider_name, len(resp.content), st.c.provider_fetch_max_bytes)
             await _save_title(provider_name, base_url, title, mark_fetched=True)
             return None
 
@@ -368,7 +365,7 @@ async def fetch_all_favicons():
         stale_set = set(stale_providers)
         favicon_tasks = []
         title_tasks = []
-        sem = asyncio.Semaphore(_CONCURRENCY)
+        sem = asyncio.Semaphore(st.c.provider_fetch_concurrency)
 
         async def _limited_favicon(name, url):
             async with sem:

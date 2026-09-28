@@ -14,36 +14,26 @@ import { syncWSPrefs } from './prefs.js';
 import { scheduleUI } from './frame.js';
 import { clearModelChartCache, getCardView } from './chart.js';
 import { cacheSet } from './cache.js';
-
-const _CARD_BUCKET_DEBOUNCE_MS = 5000;
-const _CARD_BUCKET_MIN_MS = 30000;
-let _cardBucketDebounce = null;
-let _lastCardBucketRefresh = 0;
+import { renderFilterOptions } from './filter.js';
 
 function _tsEpoch(record) {
   return record.timestamp ? new Date(record.timestamp).getTime() / 1000 : Date.now() / 1000;
 }
 
-export function refreshCardBuckets(force) {
-  if (!force && Date.now() - _lastCardBucketRefresh < _CARD_BUCKET_MIN_MS) return;
-  _lastCardBucketRefresh = Date.now();
-  fetchProviderMetrics(state.providerOrder, { cardBuckets: true }).then(metrics => {
-    if (!metrics) return;
-    const updated = [];
-    for (const [key, data] of Object.entries(metrics)) {
-      if (data.card_buckets && state.metrics[key]) {
-        state.metrics[key].card_buckets = data.card_buckets;
-        clearModelChartCache(key);
-        updated.push(key);
-      }
-    }
-    if (updated.length) scheduleUI({ models: updated });
-  }).catch(e => logError(logTag('API', '←', 'Error', 'CardBucketRefresh'), e));
+// Applies a /api/config answer and redraws what depends on it (start, reload, reconnect)
+export function applyConfigAndRender(cfg) {
+  applyConfig(cfg);
+  if (cfg.color_thresholds) { renderHelpLegends(); syncNotifSettingsUI(); }
+  renderFilterOptions();
+  renderSchedule();
 }
 
-function scheduleCardBucketRefresh() {
-  if (_cardBucketDebounce) return;
-  _cardBucketDebounce = setTimeout(() => { _cardBucketDebounce = null; refreshCardBuckets(); }, _CARD_BUCKET_DEBOUNCE_MS);
+function _refetchConfig() {
+  api('/api/config').then(cfg => {
+    if (!cfg) return;
+    cacheSet('config', cfg, state.ui.cache_ttl.config);
+    applyConfigAndRender(cfg);
+  }).catch(e => logError(logTag('API', '←', 'Error', 'Config'), e));
 }
 
 function _wsLogTag(msg) {
@@ -66,8 +56,10 @@ function _wsLogTag(msg) {
 
 function _probeToCapabilities(pr) {
   const caps = {};
-  for (const f of ['supports_vision', 'supports_tools', 'supports_structured_output', 'supports_cache']) {
-    if (pr[f] != null) caps[f] = pr[f];
+  // Capability keys come from /api/config (backend/state.py CAPABILITIES, finding F76); thinking
+  // arrives as a mode name or a flag
+  for (const { key } of state.capabilities) {
+    if (key !== 'thinking' && pr[key] != null) caps[key] = pr[key];
   }
   if (pr.thinking) caps.thinking = typeof pr.thinking === 'string' ? pr.thinking : 'enabled';
   for (const f of ['served_by', 'quantization', 'engine_version', 'served_model', 'fp_server', 'fp_features']) {
@@ -156,9 +148,15 @@ function handleWS(msg) {
       }
       if (msg.scores != null) state.metrics[msg.model].scores = msg.scores;
       if (msg.trends != null) state.metrics[msg.model].trends = msg.trends;
-      clearModelChartCache(msg.model, getCardView());
+      // A final benchmark brings its model's card buckets (finding F88: every provider's used
+      // to be refetched after any result)
+      if (msg.card_buckets != null) {
+        state.metrics[msg.model].card_buckets = msg.card_buckets;
+        clearModelChartCache(msg.model);
+      } else {
+        clearModelChartCache(msg.model, getCardView());
+      }
       scheduleUI({ models: [msg.model], summary: true, providers: true, modal });
-      if (!isHealth) scheduleCardBucketRefresh();
     }
   }
   if (msg.type === 'result_batch') {
@@ -169,8 +167,7 @@ function handleWS(msg) {
     for (const mk of models) {
       const rmsg = results[mk];
       // Reconstruct as individual result message and process
-      handleWS({ type: 'result', model: mk, record: rmsg.record, uptime_pct: rmsg.uptime_pct,
-        test_type: rmsg.test_type, status: rmsg.status, degraded_source: rmsg.degraded_source ?? null, scores: rmsg.scores, trends: rmsg.trends });
+      handleWS({ ...rmsg, type: 'result', model: mk });
     }
     return;
   }
@@ -211,19 +208,13 @@ function handleWS(msg) {
   }
   if (msg.type === 'config_updated') {
     logInfo(logTag('WS', '←', 'Config', 'Updated'));
-    api('/api/config').then(cfg => {
-      if (!cfg) return;
-      cacheSet('config', cfg, 3600);
-      applyConfig(cfg);
-      if (cfg.color_thresholds) { renderHelpLegends(); syncNotifSettingsUI(); }
-      renderSchedule();
-    }).catch(e => logError(logTag('API', '←', 'Error', 'Config'), e));
+    _refetchConfig();
     refreshNotifHistory();
     refreshModelList().then(providers => {
-      if (providers) cacheSet('providers_full', providers, 3600);
+      if (providers) cacheSet('providers_full', providers, state.ui.cache_ttl.providers);
       fetchProviderMetrics(state.providerOrder, { detailProviders: [...state.fetchedProviders], cardBuckets: true }).then(metrics => {
         if (!metrics) return;
-        cacheSet('metrics_initial', stripEphemeral(metrics), 300);
+        cacheSet('metrics_initial', stripEphemeral(metrics), state.ui.cache_ttl.metrics);
         setMetrics(metrics);
         for (const k of Object.keys(metrics)) clearModelChartCache(k);
         const now = Date.now();
@@ -240,23 +231,30 @@ function handleWS(msg) {
 }
 
 let _staleTimer = null;
+let _helloTimedOut = false;
 let _wsFirstHello = true;
 let _wsBackoffMs = null;
 let _wsConnectTimer = null;
 
 function _resetBackoff() { _wsBackoffMs = state.conn.reconnect.min_delay * 1000; }
 
-// Re-armed by every frame; the server heartbeats well inside stale_after, so firing means the socket is dead
-function _armStale(ws) {
+// Armed when the socket opens and re-armed by every frame; the server sends its hello at once and
+// heartbeats well inside stale_after, so firing means the socket is dead. A socket that opened but
+// never got its hello (a proxy that upgrades and forwards nothing) is a failed connection, not a
+// quiet one (finding F25: it stayed "connecting" forever).
+function _armStale(ws, hello) {
   clearTimeout(_staleTimer);
   _staleTimer = setTimeout(() => {
-    logWarn(logTag('WS', '←', 'Stale', `${state.conn.stale_after}s`));
+    _helloTimedOut = !hello();
+    logWarn(logTag('WS', '←', _helloTimedOut ? 'NoHello' : 'Stale', `${state.conn.stale_after}s`));
     ws.close(state.conn.close_codes.stale, 'stale');
   }, state.conn.stale_after * 1000);
 }
 
 function _onHello(msg) {
   state.conn = msg.config;
+  state.scheduler = msg.scheduler;
+  renderSchedule();
   _resetBackoff();
   state._wsConnected = true;
   recoverBackend();
@@ -264,9 +262,11 @@ function _onHello(msg) {
   logInfo(logTag('WS', '←', 'Hello'));
   syncWSPrefs();
   if (_wsFirstHello) { _wsFirstHello = false; return; }
+  // A reconnect may follow a server restart with another config
+  _refetchConfig();
   refreshNotifHistory();
   if (!state.fetchedProviders.size) return;
-  fetchProviderMetrics([...state.fetchedProviders], { cardBuckets: true }).then(m => { if (!m) return; cacheSet('metrics_initial', stripEphemeral(m), 300); setMetrics(m); for (const k of Object.keys(m)) clearModelChartCache(k); const now = Date.now(); for (const p of state.fetchedProviders) state._providerDataAt[p] = now; scheduleUI({ models: Object.keys(m), summary: true, providers: true }); }).catch(e => logError(logTag('API', '\u2190', 'Error', 'ReconnectMetrics'), e));
+  fetchProviderMetrics([...state.fetchedProviders], { cardBuckets: true }).then(m => { if (!m) return; cacheSet('metrics_initial', stripEphemeral(m), state.ui.cache_ttl.metrics); setMetrics(m); for (const k of Object.keys(m)) clearModelChartCache(k); const now = Date.now(); for (const p of state.fetchedProviders) state._providerDataAt[p] = now; scheduleUI({ models: Object.keys(m), summary: true, providers: true }); }).catch(e => logError(logTag('API', '\u2190', 'Error', 'ReconnectMetrics'), e));
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -278,7 +278,7 @@ document.addEventListener('visibilitychange', () => {
       if (state.ws) state.ws.close(state.conn.close_codes.stale, 'stale');
     });
   } else if (state._backendDown) {
-    probeBackend().then(up => { if (up) connectWS(); });
+    probeBackend().then(up => { if (up) connectWS(); }).catch(e => logError(logTag('WS', '→', 'Error', 'ForegroundProbe'), e));
   } else if (_wsConnectTimer) {
     connectWS();
   }
@@ -286,16 +286,16 @@ document.addEventListener('visibilitychange', () => {
 
 export function connectWS() {
   if (_wsConnectTimer) { clearTimeout(_wsConnectTimer); _wsConnectTimer = null; }
-  if (!state.conn) { logError(logTag('WS', '→', 'Error', 'Config'), new Error('window.__MW_CONN__ missing from the page bootstrap')); return; }
   // Callers (recovery probe, foreground) may run while a socket is still live; never open a second one
   if (state.ws && state.ws.readyState <= WebSocket.OPEN) return;
   if (_wsBackoffMs == null) _resetBackoff();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}${state.conn.ws_path}`);
   let hello = false;
-  ws.onopen = () => logDebug(logTag('WS', '←', 'Open'));
+  const gotHello = () => hello;
+  ws.onopen = () => { logDebug(logTag('WS', '←', 'Open')); _armStale(ws, gotHello); };
   ws.onmessage = (e) => {
-    _armStale(ws);
+    _armStale(ws, gotHello);
     try {
       const msg = JSON.parse(e.data);
       logDebug(_wsLogTag(msg));
@@ -308,8 +308,9 @@ export function connectWS() {
     if (state.ws !== ws) return;
     clearTimeout(_staleTimer);
     state._wsConnected = false;
-    const kind = wsCloseKind({ code: event.code, wasClean: event.wasClean, hello, restarting: state._wsRestarting }, state.conn.close_codes);
+    const kind = wsCloseKind({ code: event.code, wasClean: event.wasClean, hello, restarting: state._wsRestarting, helloTimedOut: _helloTimedOut }, state.conn.close_codes);
     state._wsRestarting = false;
+    _helloTimedOut = false;
     if (kind === 'failed') trackFail();
     const plan = wsReconnectPlan(kind, _wsBackoffMs, state._backendDown, state.conn);
     _wsBackoffMs = plan.nextBackoffMs;

@@ -2,23 +2,26 @@
 // dayBoundary (midnight separators), threshold (dashed TPS tier lines),
 // cardZones (colored tier backgrounds), gradientFill, and glow.
 import { state } from './state.js';
+import { withAlpha } from './utils.js';
 import { fmtMsCompactPlain } from './format.js';
 import { chartColors as _chartColors } from './theme.js';
 
-
-export function _hexToRgba(hex, a) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${Math.min(1, Math.max(0, a))})`;
+// Zone colours are tokens in any CSS colour form (finding F83: only #rrggbb worked, anything
+// else turned zones grey); a token nothing can read draws no zone and is logged once (utils.js)
+function _zoneGradient(ctx, color, baseAlpha, yTop, yBot) {
+  if (!withAlpha(color, 1)) return null;
+  if (yBot - yTop < 4) return withAlpha(color, baseAlpha);
+  const grad = ctx.createLinearGradient(0, yTop, 0, yBot);
+  grad.addColorStop(0, withAlpha(color, baseAlpha * 1.25));
+  grad.addColorStop(1, withAlpha(color, baseAlpha * 0.75));
+  return grad;
 }
 
-function _zoneGradient(ctx, hex, baseAlpha, yTop, yBot) {
-  if (yBot - yTop < 4) return _hexToRgba(hex, baseAlpha);
-  const grad = ctx.createLinearGradient(0, yTop, 0, yBot);
-  grad.addColorStop(0, _hexToRgba(hex, baseAlpha * 1.25));
-  grad.addColorStop(1, _hexToRgba(hex, baseAlpha * 0.75));
-  return grad;
+// Tier zones and threshold lines describe one series; they are drawn only while it is visible
+// (finding F86: hiding TPS left its bands behind the TTFT line)
+function _seriesVisible(chart, series) {
+  const i = chart.data.datasets.findIndex(ds => ds._series === series);
+  return i >= 0 && chart.isDatasetVisible(i);
 }
 
 function _fillZoneRect(ctx, x, y, w, h, radii) {
@@ -42,14 +45,13 @@ export const _ZONE_TIERS = {
   'teal-400':    { base: 'zoneBaseTeal',      fill: 0.12, border: 0.30 },
 };
 
+// The series each view's zones belong to, its color_thresholds key and its bucket value
 export const _ZONE_METRIC_MAP = {
-  speed: { cfg: 'tps', bucket: 'tps' },
-  consistency: { cfg: 'raw_p99_itl_ms', bucket: 'p99' },
-  health: { cfg: 'ttft', bucket: 'ttft' },
-  scores: { cfg: '__scores', bucket: 'cs', normFn: v => v / 100 },
+  speed: { series: 'tps', cfg: 'tps', bucket: 'tps' },
+  consistency: { series: 'p99', cfg: 'raw_p99_itl_ms', bucket: 'p99' },
+  health: { series: 'health', cfg: 'ttft', bucket: 'ttft' },
+  scores: { series: 'cs', cfg: 'scores', bucket: 'cs', normFn: v => v / 100 },
 };
-
-export const _SCORE_THRESHOLDS = { higher_is_better: true, thresholds: [80, 60, 40, 20, 0] };
 
 export function evenTimeTicks(scale) {
   const maxTicks = scale.options.ticks.maxTicksLimit || 11;
@@ -136,7 +138,7 @@ export const thresholdPlugin = {
   beforeDatasetsDraw(chart) {
     if (!chart._full) return;
     const view = chart._view;
-    if (view !== 'speed') return;
+    if (view !== 'speed' || !_seriesVisible(chart, 'tps')) return;
     const metric = 'tps';
     const cfg = state.colorThresholds?.[metric];
     const tiers = state.colorThresholds?.tiers;
@@ -150,8 +152,8 @@ export const thresholdPlugin = {
     const cc = _chartColors();
     const borders = {};
     for (const [tier, cfg] of Object.entries(_ZONE_TIERS)) {
-      const hex = (cc[cfg.base] || '').trim();
-      borders[tier] = /^#[0-9a-fA-F]{6}$/.test(hex) ? _hexToRgba(hex, cfg.border) : 'rgba(100,100,100,0.30)';
+      const color = withAlpha(cc[cfg.base], cfg.border);
+      if (color) borders[tier] = color;
     }
     const labels = [];
 
@@ -239,9 +241,8 @@ export const cardZonesPlugin = {
   beforeDatasetsDraw(chart) {
     const view = chart._view;
     const mapping = _ZONE_METRIC_MAP[view];
-    if (!mapping) return;
-    const isScores = mapping.cfg === '__scores';
-    const cfg = isScores ? _SCORE_THRESHOLDS : state.colorThresholds?.[mapping.cfg];
+    if (!mapping || !_seriesVisible(chart, mapping.series)) return;
+    const cfg = state.colorThresholds?.[mapping.cfg];
     const tiers = state.colorThresholds?.tiers;
     if (!cfg?.thresholds || !tiers) return;
     const buckets = chart._buckets;
@@ -300,10 +301,8 @@ export const cardZonesPlugin = {
       const yb = Math.min(Math.max(yUpper, yLower), bottom);
       if (yt >= yb) continue;
       const tierCfg = _ZONE_TIERS[z.color];
-      const hex = tierCfg ? (cc[tierCfg.base] || '').trim() : '';
-      const alpha = tierCfg?.fill || 0.07;
-      const fill = /^#[0-9a-fA-F]{6}$/.test(hex) ? _zoneGradient(ctx, hex, alpha, yt, yb) : 'rgba(100,100,100,0.07)';
-      rects.push({ y: yt, h: yb - yt, fill });
+      const fill = tierCfg ? _zoneGradient(ctx, cc[tierCfg.base], tierCfg.fill, yt, yb) : null;
+      if (fill) rects.push({ y: yt, h: yb - yt, fill });
     }
     for (let i = 0; i < rects.length; i++) {
       const r = rects[i];

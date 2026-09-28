@@ -1,5 +1,11 @@
 const CACHE_NAME = 'mw-shell-__CACHE_VERSION__';
 
+// A classic service worker cannot import the page's ES-module loggers (utils.js); this is their
+// stand-in, and every catch here goes through it (finding F35)
+function swLogError(ctx, err) {
+  console.error(`__APP_NAME__: SW ${ctx}`, err);
+}
+
 self.addEventListener('install', () => {
   self.skipWaiting();
 });
@@ -16,13 +22,13 @@ self.addEventListener('activate', (e) => {
           );
         })
       );
-    })
+    }).catch(err => swLogError('activate failed', err))
   );
 });
 
 self.addEventListener('push', (e) => {
   let data = {};
-  if (e.data) { try { data = e.data.json(); } catch {} }
+  if (e.data) { try { data = e.data.json(); } catch (err) { swLogError('push payload is not JSON', err); } }
   e.waitUntil(
     self.registration.showNotification(data.title || '__APP_NAME__', {
       body: data.body || '',
@@ -30,7 +36,7 @@ self.addEventListener('push', (e) => {
       badge: '__STATIC_PREFIX__/badge-96.png',
       tag: data.tag || 'mw-event',
       data: { url: data.url || '/' },
-    })
+    }).catch(err => swLogError('showNotification failed', err))
   );
 });
 
@@ -43,7 +49,7 @@ self.addEventListener('notificationclick', (e) => {
         if ('focus' in w) { w.focus(); w.navigate(url); return; }
       }
       return clients.openWindow(url);
-    })
+    }).catch(err => swLogError('notificationclick failed', err))
   );
 });
 
@@ -51,7 +57,7 @@ self.addEventListener('pushsubscriptionchange', (e) => {
   const oldSub = e.oldSubscription;
   let vapidKey = oldSub?.options?.applicationServerKey;
   e.waitUntil(
-    (vapidKey ? Promise.resolve(vapidKey) : fetch('/api/vapid-key').then(r => r.json()).then(d => d.public_key).catch(() => null)).then(key => {
+    (vapidKey ? Promise.resolve(vapidKey) : fetch('/api/vapid-key').then(r => r.json()).then(d => d.public_key).catch(err => { swLogError('VAPID key fetch failed', err); return null; })).then(key => {
       if (!key) return;
       return self.registration.pushManager.subscribe({
         userVisibleOnly: true,
@@ -72,7 +78,7 @@ self.addEventListener('pushsubscriptionchange', (e) => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ...newSub.toJSON(), client_id, prefs }),
-              }).catch(() => {}));
+              }).catch(err => swLogError('push resubscribe failed', err)));
             };
             ch.port1.start();
             c.postMessage({ type: 'sw_needs_prefs' }, [ch.port2]);
@@ -80,6 +86,6 @@ self.addEventListener('pushsubscriptionchange', (e) => {
           });
         });
       });
-    }).catch((err) => { console.error('[SW] pushsubscriptionchange error:', err); })
+    }).catch(err => swLogError('pushsubscriptionchange failed', err))
   );
 });
